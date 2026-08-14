@@ -368,6 +368,10 @@ export function TournamentDetail({ slug }: { slug: string }) {
                   ? 'Create entry'
                   : 'Entry unavailable'}
             </Button>
+          ) : session.isError ? (
+            <Button className="entry-panel__button" disabled>
+              Session check unavailable
+            </Button>
           ) : item.status === 'REGISTRATION_OPEN' || item.status === 'TRADING_ACTIVE' ? (
             <Link
               className="button button--primary button--md entry-panel__button"

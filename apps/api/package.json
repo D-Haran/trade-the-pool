@@ -9,7 +9,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --exclude '**/*.integration.test.ts'",
-    "test:integration": "pnpm --filter @trade-the-pool/database db:migrate && vitest run src/api.integration.test.ts"
+    "test:integration": "pnpm --filter @trade-the-pool/database db:migrate && vitest run src/*.integration.test.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11",
@@ -17,13 +17,17 @@
     "@fastify/swagger": "^9",
     "@fastify/swagger-ui": "^5",
     "@fastify/websocket": "^11",
+    "@solana/wallet-standard-features": "^1.4.0",
+    "@solana/wallet-standard-util": "^1.1.3",
     "@trade-the-pool/database": "workspace:*",
     "@trade-the-pool/market-data": "workspace:*",
     "@trade-the-pool/shared": "workspace:*",
     "@trade-the-pool/trading-engine": "workspace:*",
+    "bs58": "^6.0.0",
     "drizzle-orm": "^0.38.2",
     "fastify": "^5.2.0",
     "redis": "^5",
+    "tweetnacl": "^1.0.3",
     "zod": "^3.24.1",
     "zod-to-json-schema": "^3.24.6"
   },

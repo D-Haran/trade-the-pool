@@ -7,6 +7,11 @@ export type ConnectionState = 'CONNECTING' | 'CONNECTED' | 'RECONNECTING' | 'DIS
 type EventHandler = (event: RealtimeEvent) => void;
 type StateHandler = (state: ConnectionState) => void;
 
+export function isWebSocketAuthenticationFailure(payload: unknown): boolean {
+  if (!payload || typeof payload !== 'object' || !('error' in payload)) return false;
+  return (payload as { error?: { code?: string } }).error?.code === 'AUTHENTICATION_REQUIRED';
+}
+
 const websocketUrl =
   process.env.NEXT_PUBLIC_WS_URL ??
   API_URL.replace(/^http/, 'ws').replace(/\/$/, '') + '/v1/realtime';
@@ -65,8 +70,7 @@ class RealtimeClient {
         return;
       }
       if (payload && typeof payload === 'object' && 'error' in payload) {
-        const error = (payload as { error?: { code?: string } }).error;
-        if (error?.code === 'AUTHENTICATION_REQUIRED')
+        if (isWebSocketAuthenticationFailure(payload))
           window.dispatchEvent(new Event('ttp:session-expired'));
         return;
       }
@@ -98,6 +102,18 @@ class RealtimeClient {
       this.reconnectTimer = null;
       this.connect();
     }, delay);
+  }
+
+  authenticationChanged(authenticated: boolean): void {
+    if (!authenticated)
+      for (const topic of [...this.topics.keys()])
+        if (topic.startsWith('entry:')) this.topics.delete(topic);
+    this.reconnectAttempt = 0;
+    if (this.reconnectTimer !== null) window.clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    if (this.socket) this.socket.close(1000, 'Authentication state changed');
+    else if (this.topics.size) this.connect();
+    else this.setState('DISCONNECTED');
   }
 
   private send(action: 'subscribe' | 'unsubscribe', topic: string): void {

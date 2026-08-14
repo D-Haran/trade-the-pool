@@ -28,3 +28,28 @@ describe('centralized rate limiting', () => {
     ).rejects.toMatchObject({ statusCode: 429, code: 'RATE_LIMITED' });
   });
 });
+
+describe('development authentication isolation', () => {
+  it('fails before registering any route when production enables development login', async () => {
+    await expect(
+      buildApp({
+        db: null as never,
+        market: null as never,
+        store: new MemoryKeyValueStore(),
+        config: {
+          NODE_ENV: 'production',
+          DEV_AUTH_ENABLED: true,
+          API_DOCS_ENABLED: false,
+          TRUST_PROXY: false,
+          CORS_ALLOWED_ORIGINS: 'https://app.example.com',
+          SESSION_TTL_SECONDS: 604_800,
+          WALLET_AUTH_ENABLED: true,
+          SOLANA_CLUSTER: 'mainnet-beta',
+          WALLET_AUTH_ORIGIN: 'https://app.example.com',
+          WALLET_AUTH_DOMAIN: 'app.example.com',
+          WALLET_CHALLENGE_TTL_SECONDS: 300,
+        },
+      }),
+    ).rejects.toThrow('Development authentication cannot be enabled in production');
+  });
+});

@@ -8,6 +8,7 @@ import { sql } from 'drizzle-orm';
 import { users, type Database } from '@trade-the-pool/database';
 import {
   marketSymbolSchema,
+  decimalToString,
   orderRequestSchema,
   paginationSchema,
   positionProtectionRequestSchema,
@@ -16,7 +17,7 @@ import {
   uuidSchema,
   type Environment,
 } from '@trade-the-pool/shared';
-import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import {
@@ -30,6 +31,14 @@ import { AuthorizationService } from './authorization.js';
 import { ApiError, normalizeError } from './errors.js';
 import { RATE_LIMITS, RateLimiter, type KeyValueStore } from './infrastructure.js';
 import { registerRealtime, RealtimeHub } from './realtime.js';
+import { enforceCsrf, parseAllowedOrigins } from './security.js';
+import {
+  WalletAuthenticationService,
+  createWalletFlowBinding,
+  WALLET_FLOW_COOKIE,
+  walletSubject,
+  type WalletProof,
+} from './wallet-auth.js';
 import {
   AccountSnapshotService,
   EntryReadService,
@@ -49,8 +58,14 @@ export type ApiRuntimeConfig = Pick<
   | 'NODE_ENV'
   | 'DEV_AUTH_ENABLED'
   | 'API_DOCS_ENABLED'
+  | 'TRUST_PROXY'
   | 'CORS_ALLOWED_ORIGINS'
   | 'SESSION_TTL_SECONDS'
+  | 'WALLET_AUTH_ENABLED'
+  | 'SOLANA_CLUSTER'
+  | 'WALLET_AUTH_ORIGIN'
+  | 'WALLET_AUTH_DOMAIN'
+  | 'WALLET_CHALLENGE_TTL_SECONDS'
 >;
 
 export type AppDependencies = {
@@ -67,8 +82,14 @@ const defaultConfig: ApiRuntimeConfig = {
   NODE_ENV: 'test',
   DEV_AUTH_ENABLED: false,
   API_DOCS_ENABLED: false,
+  TRUST_PROXY: false,
   CORS_ALLOWED_ORIGINS: 'http://localhost:3000',
-  SESSION_TTL_SECONDS: 86_400,
+  SESSION_TTL_SECONDS: 604_800,
+  WALLET_AUTH_ENABLED: true,
+  SOLANA_CLUSTER: 'devnet',
+  WALLET_AUTH_ORIGIN: 'http://localhost:3000',
+  WALLET_AUTH_DOMAIN: 'localhost:3000',
+  WALLET_CHALLENGE_TTL_SECONDS: 300,
 };
 
 function parse<S extends z.ZodTypeAny>(schema: S, value: unknown): z.output<S> {
@@ -89,18 +110,21 @@ function openApiSchema(schema: z.ZodTypeAny): object {
 
 export async function buildApp(dependencies?: AppDependencies): Promise<FastifyInstance> {
   const config = dependencies?.config ?? defaultConfig;
+  if (config.NODE_ENV === 'production' && config.DEV_AUTH_ENABLED)
+    throw new Error('Development authentication cannot be enabled in production');
   const app = Fastify({
     logger: { level: process.env.LOG_LEVEL ?? (config.NODE_ENV === 'test' ? 'silent' : 'info') },
     genReqId: (request) => request.headers['x-request-id']?.toString() ?? randomUUID(),
     bodyLimit: 32 * 1024,
-    trustProxy: true,
+    trustProxy: config.TRUST_PROXY,
     ajv: { customOptions: { removeAdditional: false } },
   });
 
   await app.register(cookie);
+  const allowedOrigins = parseAllowedOrigins(config.CORS_ALLOWED_ORIGINS);
   await app.register(cors, {
     credentials: true,
-    origin: config.CORS_ALLOWED_ORIGINS.split(',').map((origin) => origin.trim()),
+    origin: allowedOrigins,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   });
   await app.register(websocket, { options: { maxPayload: 8 * 1024 } });
@@ -118,12 +142,13 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
   if (config.API_DOCS_ENABLED) app.get('/openapi.json', async () => app.swagger());
 
   app.decorateRequest('authenticatedUser', null);
+  app.decorateRequest('authenticatedSession', null);
 
   app.setErrorHandler((error, request, reply) => {
     const normalized = normalizeError(error);
     if (normalized.statusCode >= 500) request.log.error({ err: error }, 'request failed');
     else request.log.warn({ code: normalized.code }, 'request rejected');
-    if (/^\/v1\/(auth|orders|tournaments\/[^/]+\/entries)/.test(request.url))
+    if (/^\/v1\/(auth|me\/wallets|orders|tournaments\/[^/]+\/entries)/.test(request.url))
       request.log.warn(
         {
           audit: true,
@@ -153,14 +178,21 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
     try {
       await dependencies.db.execute(sql`select 1`);
       await dependencies.store.ping();
-      await Promise.all(
-        ['BTC-USD', 'ETH-USD', 'SOL-USD'].map((symbol) =>
-          dependencies.market.getSnapshot(symbol as never),
-        ),
-      );
+      const richerMarket = dependencies.market as Partial<MarketDataProvider>;
+      const marketHealth = richerMarket.getHealth?.();
+      if (!marketHealth)
+        await Promise.all(
+          ['BTC-USD', 'ETH-USD', 'SOL-USD'].map((symbol) =>
+            dependencies.market.getSnapshot(symbol as never),
+          ),
+        );
+      const marketStatus = marketHealth?.markets.some((market) => market.status !== 'LIVE')
+        ? 'degraded'
+        : 'ok';
       return {
-        status: 'ready',
-        dependencies: { postgres: 'ok', redis: 'ok', marketData: 'ok' },
+        status: marketStatus === 'ok' ? 'ready' : 'ready_degraded',
+        dependencies: { postgres: 'ok', redis: 'ok', marketData: marketStatus },
+        ...(marketHealth ? { marketData: marketHealth } : {}),
         requestId: request.id,
       };
     } catch (error) {
@@ -179,6 +211,17 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
   );
   const authorization = new AuthorizationService(dependencies.db);
   const rateLimiter = new RateLimiter(dependencies.store);
+  const walletAuthentication = new WalletAuthenticationService(
+    dependencies.db,
+    dependencies.store,
+    {
+      enabled: config.WALLET_AUTH_ENABLED,
+      cluster: config.SOLANA_CLUSTER,
+      origin: config.WALLET_AUTH_ORIGIN,
+      domain: config.WALLET_AUTH_DOMAIN,
+      challengeTtlSeconds: config.WALLET_CHALLENGE_TTL_SECONDS,
+    },
+  );
   const snapshots = new AccountSnapshotService(dependencies.db, dependencies.market);
   const tournaments = new TournamentReadService(dependencies.db);
   const leaderboards = new LeaderboardService(dependencies.db, snapshots, dependencies.store, hub);
@@ -187,10 +230,18 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
     new TradingApiService(dependencies.db, dependencies.market, snapshots, leaderboards, hub);
   const entries = new EntryReadService(dependencies.db, snapshots, leaderboards);
 
+  app.get('/health/market-data', async (request) => ({
+    status: 'ok',
+    marketData: (dependencies.market as Partial<MarketDataProvider>).getHealth?.() ?? null,
+    realtime: hub.getMetrics(),
+    requestId: request.id,
+  }));
+
+  app.addHook('onRequest', async (request) => enforceCsrf(request, allowedOrigins));
   app.addHook('onRequest', async (request) => {
-    request.authenticatedUser = await authentication.resolveSession(
-      request.cookies[SESSION_COOKIE],
-    );
+    const session = await authentication.resolveSession(request.cookies[SESSION_COOKIE]);
+    request.authenticatedSession = session;
+    request.authenticatedUser = session?.user ?? null;
   });
 
   const audit = (
@@ -210,9 +261,244 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
       'audit event',
     );
 
+  const walletRateLimit = async (
+    scope: string,
+    subject: string,
+    policy: (typeof RATE_LIMITS)[keyof typeof RATE_LIMITS],
+  ) => {
+    try {
+      await rateLimiter.consume(scope, subject, policy);
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      throw new ApiError(
+        503,
+        'WALLET_AUTHENTICATION_UNAVAILABLE',
+        'Wallet authentication is temporarily unavailable.',
+      );
+    }
+  };
+
+  const assertConfiguredWalletOrigin = (request: FastifyRequest) => {
+    const origin = request.headers.origin;
+    if (origin && origin !== config.WALLET_AUTH_ORIGIN)
+      throw new ApiError(403, 'CSRF_VALIDATION_FAILED', 'The wallet-auth origin is not allowed.');
+  };
+
+  const setWalletFlowCookie = (reply: FastifyReply, value: string) =>
+    reply.setCookie(WALLET_FLOW_COOKIE, value, {
+      path: '/v1',
+      httpOnly: true,
+      secure: config.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: config.WALLET_CHALLENGE_TTL_SECONDS,
+      priority: 'high',
+    });
+
+  const clearWalletFlowCookie = (reply: FastifyReply) =>
+    reply.clearCookie(WALLET_FLOW_COOKIE, {
+      path: '/v1',
+      httpOnly: true,
+      secure: config.NODE_ENV === 'production',
+      sameSite: 'lax',
+      priority: 'high',
+    });
+
+  const walletAddressSchema = z.object({ address: z.string().min(32).max(44) }).strict();
+  const walletProofSchema = z
+    .object({
+      challengeId: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+      address: z.string().min(32).max(44),
+      signature: z.string().min(1).max(256),
+      signedMessage: z.string().min(1).max(8192),
+    })
+    .strict();
+  const walletIdSchema = z.object({ id: uuidSchema }).strict();
+
+  const applyInvalidSignatureLimit = async (request: FastifyRequest, proof: WalletProof) => {
+    try {
+      return await walletAuthentication.verifyChallenge('LOGIN', proof, {
+        browserBinding: request.cookies[WALLET_FLOW_COOKIE] ?? '',
+        sessionId: request.authenticatedSession?.id,
+      });
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'WALLET_SIGNATURE_INVALID')
+        await walletRateLimit(
+          'wallet-invalid-signature',
+          `${request.ip}:${walletSubject(proof.address)}`,
+          RATE_LIMITS.walletInvalidSignature,
+        );
+      throw error;
+    }
+  };
+
+  app.post(
+    '/v1/auth/wallet/challenge',
+    {
+      schema: {
+        tags: ['Authentication'],
+        body: openApiSchema(walletAddressSchema),
+      },
+    },
+    async (request, reply) => {
+      assertConfiguredWalletOrigin(request);
+      const body = parse(walletAddressSchema, request.body);
+      await walletRateLimit('wallet-challenge-ip', request.ip, RATE_LIMITS.walletChallenge);
+      await walletRateLimit(
+        'wallet-challenge-address',
+        walletSubject(body.address),
+        RATE_LIMITS.walletChallenge,
+      );
+      const browserBinding = createWalletFlowBinding();
+      const challenge = await walletAuthentication.issueChallenge('LOGIN', body.address, {
+        browserBinding,
+        sessionId: request.authenticatedSession?.id,
+      });
+      setWalletFlowCookie(reply, browserBinding);
+      audit(request, 'wallet.challenge_issued', {
+        purpose: 'LOGIN',
+        walletSubject: walletSubject(body.address),
+      });
+      return { data: challenge };
+    },
+  );
+
+  app.post(
+    '/v1/auth/wallet/verify',
+    {
+      schema: {
+        tags: ['Authentication'],
+        body: openApiSchema(walletProofSchema),
+      },
+    },
+    async (request, reply) => {
+      assertConfiguredWalletOrigin(request);
+      const proof = parse(walletProofSchema, request.body);
+      clearWalletFlowCookie(reply);
+      await walletRateLimit('wallet-verification', request.ip, RATE_LIMITS.walletVerification);
+      const verified = await applyInvalidSignatureLimit(request, proof);
+      const userId = await walletAuthentication.resolveOrCreateUser(
+        verified.address,
+        verified.network,
+      );
+      const previousSessionId = request.cookies[SESSION_COOKIE];
+      const session = await authentication.rotateSession(userId, previousSessionId);
+      if (previousSessionId) hub.disconnectSession(previousSessionId, 'Session rotated');
+      setSessionCookie(
+        reply,
+        session.id,
+        config.NODE_ENV === 'production',
+        config.SESSION_TTL_SECONDS,
+      );
+      request.authenticatedSession = session;
+      request.authenticatedUser = session.user;
+      audit(request, 'wallet.login', {
+        walletSubject: walletSubject(verified.address),
+        network: verified.network,
+      });
+      return { data: { user: session.user, expiresInSeconds: config.SESSION_TTL_SECONDS } };
+    },
+  );
+
+  app.post(
+    '/v1/me/wallets/challenge',
+    {
+      schema: { tags: ['Wallets'], body: openApiSchema(walletAddressSchema) },
+    },
+    async (request, reply) => {
+      assertConfiguredWalletOrigin(request);
+      const user = requireUser(request);
+      const session = request.authenticatedSession!;
+      const body = parse(walletAddressSchema, request.body);
+      await walletRateLimit('wallet-link', user.id, RATE_LIMITS.walletLink);
+      const browserBinding = createWalletFlowBinding();
+      const challenge = await walletAuthentication.issueChallenge('LINK', body.address, {
+        browserBinding,
+        userId: user.id,
+        sessionId: session.id,
+      });
+      setWalletFlowCookie(reply, browserBinding);
+      audit(request, 'wallet.challenge_issued', {
+        purpose: 'LINK',
+        walletSubject: walletSubject(body.address),
+      });
+      return { data: challenge };
+    },
+  );
+
+  app.post(
+    '/v1/me/wallets/verify',
+    { schema: { tags: ['Wallets'], body: openApiSchema(walletProofSchema) } },
+    async (request, reply) => {
+      assertConfiguredWalletOrigin(request);
+      const user = requireUser(request);
+      const session = request.authenticatedSession!;
+      const proof = parse(walletProofSchema, request.body);
+      clearWalletFlowCookie(reply);
+      await walletRateLimit('wallet-link-verify', user.id, RATE_LIMITS.walletLink);
+      let verified;
+      try {
+        verified = await walletAuthentication.verifyChallenge('LINK', proof, {
+          browserBinding: request.cookies[WALLET_FLOW_COOKIE] ?? '',
+          userId: user.id,
+          sessionId: session.id,
+        });
+      } catch (error) {
+        if (error instanceof ApiError && error.code === 'WALLET_SIGNATURE_INVALID')
+          await walletRateLimit(
+            'wallet-invalid-signature',
+            `${request.ip}:${walletSubject(proof.address)}`,
+            RATE_LIMITS.walletInvalidSignature,
+          );
+        throw error;
+      }
+      const wallet = await walletAuthentication.link(user.id, verified.address, verified.network);
+      audit(request, 'wallet.linked', {
+        walletId: wallet.id,
+        walletSubject: walletSubject(wallet.address),
+        isPrimary: wallet.isPrimary,
+      });
+      return reply.status(201).send({ data: wallet });
+    },
+  );
+
+  app.get('/v1/me/wallets', { schema: { tags: ['Wallets'] } }, async (request) => ({
+    data: await walletAuthentication.list(requireUser(request).id),
+  }));
+
+  app.delete(
+    '/v1/me/wallets/:id',
+    { schema: { tags: ['Wallets'], params: openApiSchema(walletIdSchema) } },
+    async (request, reply) => {
+      const user = requireUser(request);
+      const { id } = parse(walletIdSchema, request.params);
+      await walletRateLimit('wallet-unlink', user.id, RATE_LIMITS.walletLink);
+      await walletAuthentication.unlink(user.id, id);
+      audit(request, 'wallet.unlinked', { walletId: id });
+      return reply.status(204).send();
+    },
+  );
+
+  app.put(
+    '/v1/me/wallets/:id/primary',
+    {
+      schema: {
+        tags: ['Wallets'],
+        params: openApiSchema(walletIdSchema),
+        body: openApiSchema(z.object({}).strict()),
+      },
+    },
+    async (request) => {
+      const user = requireUser(request);
+      const { id } = parse(walletIdSchema, request.params);
+      parse(z.object({}).strict(), request.body ?? {});
+      await walletRateLimit('wallet-primary', user.id, RATE_LIMITS.walletLink);
+      const wallet = await walletAuthentication.makePrimary(user.id, id);
+      audit(request, 'wallet.primary_changed', { walletId: id });
+      return { data: wallet };
+    },
+  );
+
   if (config.DEV_AUTH_ENABLED) {
-    if (config.NODE_ENV === 'production')
-      throw new Error('Development authentication cannot be enabled in production');
     app.get('/v1/auth/dev/users', { schema: { tags: ['Authentication'] } }, async () => ({
       data: await dependencies.db
         .select({ id: users.id, displayName: users.displayName })
@@ -226,13 +512,16 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
       async (request, reply) => {
         await rateLimiter.consume('auth', request.ip, RATE_LIMITS.auth);
         const body = parse(developmentLoginSchema, request.body);
-        const session = await authentication.createSession(body.userId);
+        const previousSessionId = request.cookies[SESSION_COOKIE];
+        const session = await authentication.rotateSession(body.userId, previousSessionId);
+        if (previousSessionId) hub.disconnectSession(previousSessionId, 'Session rotated');
         setSessionCookie(
           reply,
           session.id,
           config.NODE_ENV === 'production',
           config.SESSION_TTL_SECONDS,
         );
+        request.authenticatedSession = session;
         request.authenticatedUser = session.user;
         audit(request, 'auth.login');
         return { data: { user: session.user, expiresInSeconds: config.SESSION_TTL_SECONDS } };
@@ -244,10 +533,12 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
     data: { user: requireUser(request) },
   }));
   app.post('/v1/auth/logout', { schema: { tags: ['Authentication'] } }, async (request, reply) => {
-    const user = requireUser(request);
-    await authentication.invalidate(request.cookies[SESSION_COOKIE]);
+    const sessionId = request.cookies[SESSION_COOKIE];
+    const user = request.authenticatedUser;
+    await authentication.invalidate(sessionId);
     clearSessionCookie(reply, config.NODE_ENV === 'production');
-    audit(request, 'auth.logout', { userId: user.id });
+    if (sessionId) hub.disconnectSession(sessionId, 'Session logged out');
+    audit(request, 'auth.logout', { userId: user?.id, outcome: 'invalidated' });
     return reply.status(204).send();
   });
 
@@ -602,50 +893,80 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
       limit: z.coerce.number().int().min(1).max(500).default(240),
     })
     .strict();
+  const serializeMarket = async (symbol: z.infer<typeof marketSymbolSchema>) => {
+    const market = dependencies.market as Partial<MarketDataProvider>;
+    const view = market.getMarketView?.(symbol);
+    const fallback = view ? null : await dependencies.market.getSnapshot(symbol);
+    const visible = view?.exchangePrice ?? view?.authoritativeMark ?? fallback;
+    if (!visible)
+      throw new ApiError(503, 'MARKET_DATA_UNAVAILABLE', `${symbol} market data is unavailable.`);
+    const statistics = view?.statistics ?? market.getStatistics?.(symbol) ?? null;
+    const health = market.getHealth?.();
+    const metadata = market.getMarkets?.().find((item) => item.symbol === symbol);
+    const mark = view?.authoritativeMark ?? fallback;
+    const age = Date.now() - visible.marketTimestamp.getTime();
+    return {
+      symbol: visible.symbol,
+      dataMode: health?.mode ?? 'live',
+      price: priceToString(visible.price),
+      markPrice: mark ? priceToString(mark.price) : null,
+      marketTimestamp: visible.marketTimestamp,
+      markTimestamp: mark?.marketTimestamp ?? null,
+      source: visible.source,
+      markSource: mark?.source ?? null,
+      status:
+        view?.status ?? (age > 30_000 || age < 0 ? 'STALE' : age > 5_000 ? 'DELAYED' : 'LIVE'),
+      exchangeStatus:
+        view?.exchangeStatus ??
+        (age > 30_000 || age < 0 ? 'STALE' : age > 5_000 ? 'DELAYED' : 'LIVE'),
+      availability: view?.availability ?? 'ACTIVE',
+      deviationBasisPoints: view?.deviationBasisPoints?.toString() ?? null,
+      change24hBasisPoints: statistics?.change24hBasisPoints?.toString() ?? null,
+      high24h: statistics?.high24h ? priceToString(statistics.high24h) : null,
+      low24h: statistics?.low24h ? priceToString(statistics.low24h) : null,
+      volume24h: statistics?.volume24h ? quantityToString(statistics.volume24h) : null,
+      provenance: health?.components ?? {
+        currentPrice: visible.source,
+        statistics24h: visible.source,
+        historicalCandles: visible.source,
+        realtimeCandles: visible.source,
+        orderBook: visible.source,
+        recentTrades: visible.source,
+        authoritativeMark: mark?.source ?? visible.source,
+        comparisonPrice: visible.source,
+      },
+      metadata: metadata
+        ? {
+            assetClass: metadata.assetClass,
+            baseCurrency: metadata.baseCurrency,
+            quoteCurrency: metadata.quoteCurrency,
+            tradingSchedule: metadata.tradingSchedule,
+            pricePrecision: metadata.pricePrecision,
+            quantityPrecision: metadata.quantityPrecision,
+          }
+        : {
+            assetClass: 'CRYPTO',
+            baseCurrency: symbol.split('-')[0],
+            quoteCurrency: 'USD',
+            tradingSchedule: '24/7',
+            pricePrecision: 8,
+            quantityPrecision: 8,
+          },
+    };
+  };
+  app.get('/v1/markets', { schema: { tags: ['Markets'] } }, async () => ({
+    data: await Promise.all(
+      ['BTC-USD', 'ETH-USD', 'SOL-USD'].map((symbol) =>
+        serializeMarket(symbol as z.infer<typeof marketSymbolSchema>),
+      ),
+    ),
+  }));
   app.get(
     '/v1/markets/:symbol',
     { schema: { tags: ['Markets'], params: openApiSchema(marketParameterSchema) } },
     async (request) => {
       const { symbol } = parse(marketParameterSchema, request.params);
-      const snapshot = await dependencies.market.getSnapshot(symbol);
-      const market = dependencies.market as Partial<MarketDataProvider>;
-      const statistics =
-        typeof market.getStatistics === 'function' ? market.getStatistics(symbol) : null;
-      const metadata =
-        typeof market.getMarkets === 'function'
-          ? market.getMarkets().find((item) => item.symbol === symbol)
-          : null;
-      const age = Date.now() - snapshot.marketTimestamp.getTime();
-      return {
-        data: {
-          symbol: snapshot.symbol,
-          price: priceToString(snapshot.price),
-          marketTimestamp: snapshot.marketTimestamp,
-          source: snapshot.source,
-          status: age > 30_000 || age < 0 ? 'STALE' : age > 5_000 ? 'DELAYED' : 'LIVE',
-          change24hBasisPoints: statistics?.change24hBasisPoints?.toString() ?? null,
-          high24h: statistics?.high24h ? priceToString(statistics.high24h) : null,
-          low24h: statistics?.low24h ? priceToString(statistics.low24h) : null,
-          volume24h: statistics?.volume24h ? quantityToString(statistics.volume24h) : null,
-          metadata: metadata
-            ? {
-                assetClass: metadata.assetClass,
-                baseCurrency: metadata.baseCurrency,
-                quoteCurrency: metadata.quoteCurrency,
-                tradingSchedule: metadata.tradingSchedule,
-                pricePrecision: metadata.pricePrecision,
-                quantityPrecision: metadata.quantityPrecision,
-              }
-            : {
-                assetClass: 'CRYPTO',
-                baseCurrency: symbol.split('-')[0],
-                quoteCurrency: 'USD',
-                tradingSchedule: '24/7',
-                pricePrecision: 8,
-                quantityPrecision: 8,
-              },
-        },
-      };
+      return { data: await serializeMarket(symbol) };
     },
   );
   app.get(
@@ -664,13 +985,91 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
       if (typeof market.getCandles !== 'function')
         throw new ApiError(404, 'NOT_FOUND', 'Market candle history is unavailable.');
       return {
-        data: market.getCandles(symbol, interval, limit).map((candle) => ({
+        data: (await market.getCandles(symbol, interval, limit)).map((candle) => ({
           timestamp: candle.timestamp,
           open: priceToString(candle.open),
           high: priceToString(candle.high),
           low: priceToString(candle.low),
           close: priceToString(candle.close),
+          volume: candle.volume ? quantityToString(candle.volume) : null,
         })),
+        provenance:
+          (market as Partial<MarketDataProvider>).getHealth?.().components.historicalCandles ??
+          null,
+      };
+    },
+  );
+  const depthQuerySchema = z
+    .object({ depth: z.coerce.number().int().min(1).max(50).default(25) })
+    .strict();
+  app.get(
+    '/v1/markets/:symbol/book',
+    {
+      schema: {
+        tags: ['Markets'],
+        params: openApiSchema(marketParameterSchema),
+        querystring: openApiSchema(depthQuerySchema),
+      },
+    },
+    async (request) => {
+      const { symbol } = parse(marketParameterSchema, request.params);
+      const { depth } = parse(depthQuerySchema, request.query);
+      const market = dependencies.market as Partial<MarketDataProvider>;
+      if (!market.getOrderBook)
+        throw new ApiError(404, 'NOT_FOUND', 'Market depth is unavailable.');
+      const book = market.getOrderBook(symbol, depth);
+      return {
+        data: {
+          symbol: book.symbol,
+          venue: book.venue,
+          status: book.status,
+          timestamp: book.timestamp,
+          bids: book.bids.map((level) => ({
+            price: priceToString(level.price),
+            quantity: quantityToString(level.quantity),
+            total: quantityToString(level.total),
+          })),
+          asks: book.asks.map((level) => ({
+            price: priceToString(level.price),
+            quantity: quantityToString(level.quantity),
+            total: quantityToString(level.total),
+          })),
+          spread: book.spread ? decimalToString(book.spread) : null,
+          spreadBasisPoints: book.spreadBasisPoints?.toString() ?? null,
+        },
+        provenance: market.getHealth?.().components.orderBook ?? book.venue,
+      };
+    },
+  );
+  const tradesQuerySchema = z
+    .object({ limit: z.coerce.number().int().min(1).max(100).default(50) })
+    .strict();
+  app.get(
+    '/v1/markets/:symbol/trades',
+    {
+      schema: {
+        tags: ['Markets'],
+        params: openApiSchema(marketParameterSchema),
+        querystring: openApiSchema(tradesQuerySchema),
+      },
+    },
+    async (request) => {
+      const { symbol } = parse(marketParameterSchema, request.params);
+      const { limit } = parse(tradesQuerySchema, request.query);
+      const market = dependencies.market as Partial<MarketDataProvider>;
+      if (!market.getRecentTrades)
+        throw new ApiError(404, 'NOT_FOUND', 'Recent market trades are unavailable.');
+      return {
+        data: market.getRecentTrades(symbol, limit).map((trade) => ({
+          id: trade.id,
+          symbol: trade.symbol,
+          price: priceToString(trade.price),
+          quantity: quantityToString(trade.quantity),
+          side: trade.side,
+          timestamp: trade.timestamp,
+          venue: trade.venue,
+        })),
+        provenance: market.getHealth?.().components.recentTrades ?? null,
       };
     },
   );
@@ -710,7 +1109,13 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
   }
 
   await app.register(async (realtimeApp) => {
-    registerRealtime(realtimeApp, { hub, authorization, rateLimiter });
+    registerRealtime(realtimeApp, {
+      hub,
+      authorization,
+      authentication,
+      rateLimiter,
+      allowedOrigins,
+    });
   });
   if (dependencies.close) app.addHook('onClose', dependencies.close);
   return app;

@@ -252,7 +252,7 @@ export function OrderTicket({
       <dl className="order-estimate">
         <div>
           <dt>Reference mark</dt>
-          <dd className="tabular">{market ? formatPrice(market.price) : '—'}</dd>
+          <dd className="tabular">{market?.markPrice ? formatPrice(market.markPrice) : '—'}</dd>
         </div>
         <div>
           <dt>Estimated fee</dt>

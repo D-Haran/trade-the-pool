@@ -18,6 +18,7 @@ import { api, ApiClientError } from '@/lib/api-client';
 import { formatPrice, formatQuantity, formatUsd } from '@/lib/format';
 import { queryKeys } from '@/lib/query-keys';
 import { isTradable } from '@/lib/tournaments';
+import { cn } from '@/lib/cn';
 import { useTerminalStore } from '@/lib/terminal-store';
 import { useRealtime } from '@/hooks/use-realtime';
 import { AuthGuard } from './auth-guard';
@@ -25,6 +26,7 @@ import { ErrorState, LoadingState } from './ui/states';
 import { useToast } from './ui/toast';
 import { ChartWorkspace } from './terminal/chart-workspace';
 import { MarketHeader } from './terminal/market-header';
+import { MarketDepthPanel } from './terminal/market-depth';
 import { OrderTicket } from './terminal/order-ticket';
 import { TerminalPanels } from './terminal/terminal-panels';
 import { AccountStrip, TournamentStatus } from './terminal/tournament-status';
@@ -64,6 +66,7 @@ function Terminal({ slug, entryId }: { slug: string; entryId: string }) {
   const now = useClock();
   const { symbol, setSymbol, confirmationsEnabled } = useTerminalStore();
   const [switching, setSwitching] = useState(false);
+  const [depthCollapsed, setDepthCollapsed] = useState(false);
   const retryRef = useRef<{ fingerprint: string; key: string } | null>(null);
 
   useEffect(() => setSwitching(false), [entryId]);
@@ -161,12 +164,21 @@ function Terminal({ slug, entryId }: { slug: string; entryId: string }) {
                 data: {
                   ...current.data,
                   price: event.price,
+                  markPrice: event.markPrice,
                   marketTimestamp: event.marketTimestamp,
+                  markTimestamp: event.markTimestamp,
                   source: event.source,
-                  status: 'LIVE',
+                  markSource: event.markSource,
+                  status: event.status,
+                  exchangeStatus: event.exchangeStatus,
                 },
               }
             : current,
+      );
+    if (event.type === 'market.status')
+      queryClient.setQueryData<ApiEnvelope<MarketSnapshotDto>>(
+        queryKeys.market(event.symbol),
+        (current) => (current ? { data: { ...current.data, status: event.status } } : current),
       );
     if (event.type === 'entry.account_updated' && event.entryId === entryId) {
       queryClient.setQueryData<ApiEnvelope<EntryDetailDto>>(queryKeys.entry(entryId), (current) =>
@@ -207,18 +219,15 @@ function Terminal({ slug, entryId }: { slug: string; entryId: string }) {
   const topics = useMemo(
     () =>
       confirmed && tournamentId
-        ? [
-            ...symbols.map((item) => `market:${item}`),
-            `tournament:${tournamentId}`,
-            `entry:${entryId}`,
-          ]
+        ? [`market:${symbol}`, `tournament:${tournamentId}`, `entry:${entryId}`]
         : [],
-    [confirmed, entryId, tournamentId],
+    [confirmed, entryId, symbol, tournamentId],
   );
   const connection = useRealtime(topics, handleEvent, () => {
     void invalidateTradingState();
-    for (const marketSymbol of symbols)
-      void queryClient.invalidateQueries({ queryKey: queryKeys.market(marketSymbol) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.market(symbol) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.book(symbol) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.marketTrades(symbol) });
     void queryClient.invalidateQueries({ queryKey: queryKeys.tournament(slug) });
   });
 
@@ -319,19 +328,14 @@ function Terminal({ slug, entryId }: { slug: string; entryId: string }) {
 
   const account = entry.data.data;
   const marketError = marketQueries[symbols.indexOf(symbol)]?.isError ?? false;
-  const age = activeMarket
-    ? now - new Date(activeMarket.marketTimestamp).getTime()
-    : Number.POSITIVE_INFINITY;
-  const stale = age < 0 || age > 30_000;
+  const stale =
+    !activeMarket ||
+    ['STALE', 'RECONNECTING', 'UNAVAILABLE', 'DEGRADED'].includes(activeMarket.status);
   const freshness = marketError
     ? 'UNAVAILABLE'
     : connection === 'RECONNECTING' || connection === 'CONNECTING'
       ? 'RECONNECTING'
-      : stale
-        ? 'STALE'
-        : activeMarket?.status === 'DELAYED'
-          ? 'DELAYED'
-          : 'LIVE';
+      : (activeMarket?.status ?? 'UNAVAILABLE');
   const deadlinePassed = now >= new Date(account.tournament.tradingClosesAt).getTime();
   const restUnavailable = entry.isError || tournament.isError || marketError;
   const tradeDisabled =
@@ -346,7 +350,9 @@ function Terminal({ slug, entryId }: { slug: string; entryId: string }) {
   const disabledReason = restUnavailable
     ? 'Trading service unavailable.'
     : stale
-      ? 'Market data is stale. Waiting for an authoritative update.'
+      ? activeMarket?.status === 'DEGRADED'
+        ? 'Authoritative pricing disagrees with healthy comparison feeds. New orders are paused.'
+        : 'Authoritative market data is stale. Waiting for a trusted update.'
       : connection !== 'CONNECTED'
         ? 'Realtime state is reconnecting. Orders are paused for safety.'
         : deadlinePassed || (tournament.data && !isTradable(tournament.data.data.status))
@@ -361,6 +367,10 @@ function Terminal({ slug, entryId }: { slug: string; entryId: string }) {
     url.searchParams.set('symbol', next);
     window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}`);
   };
+  const activePosition =
+    positions.data?.data.find(
+      (position) => position.symbol === symbol && position.quantity !== '0.00000000',
+    ) ?? null;
 
   return (
     <div className="professional-terminal-page">
@@ -389,8 +399,18 @@ function Terminal({ slug, entryId }: { slug: string; entryId: string }) {
         onSelect={selectMarket}
         freshness={freshness}
       />
-      <div className="professional-terminal-grid">
-        <ChartWorkspace symbol={symbol} />
+      <div
+        className={cn(
+          'professional-terminal-grid',
+          depthCollapsed && 'is-depth-collapsed',
+        )}
+      >
+        <ChartWorkspace symbol={symbol} position={activePosition} />
+        <MarketDepthPanel
+          symbol={symbol}
+          collapsed={depthCollapsed}
+          onToggle={() => setDepthCollapsed((value) => !value)}
+        />
         <OrderTicket
           account={account}
           symbol={symbol}

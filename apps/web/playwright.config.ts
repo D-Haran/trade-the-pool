@@ -25,7 +25,7 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: `NODE_ENV=development API_HOST=127.0.0.1 API_PORT=${apiPort} DATABASE_URL=${databaseUrl} REDIS_URL=${redisUrl} DEV_AUTH_ENABLED=true API_DOCS_ENABLED=false CORS_ALLOWED_ORIGINS=${webUrl} SESSION_TTL_SECONDS=86400 LOG_LEVEL=warn pnpm --filter @trade-the-pool/api exec tsx src/server.ts`,
+      command: `NODE_ENV=development API_HOST=127.0.0.1 API_PORT=${apiPort} DATABASE_URL=${databaseUrl} REDIS_URL=${redisUrl} DEV_AUTH_ENABLED=true API_DOCS_ENABLED=false TRUST_PROXY=false CORS_ALLOWED_ORIGINS=${webUrl} SESSION_TTL_SECONDS=604800 WALLET_AUTH_ENABLED=true SOLANA_CLUSTER=devnet WALLET_AUTH_ORIGIN=${webUrl} WALLET_AUTH_DOMAIN=127.0.0.1:${webPort} WALLET_CHALLENGE_TTL_SECONDS=300 LOG_LEVEL=warn pnpm --filter @trade-the-pool/api exec tsx src/server.ts`,
       cwd: '../..',
       url: `${apiUrl}/health/ready`,
       reuseExistingServer: true,

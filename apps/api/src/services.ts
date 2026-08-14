@@ -5,6 +5,7 @@ import {
   positions,
   tournamentEntries,
   tournamentEntryFeeTiers,
+  tournamentSettlementMarks,
   tournaments,
   users,
   type Database,
@@ -67,7 +68,38 @@ export class AccountSnapshotService {
       .from(tournamentEntries)
       .where(eq(tournamentEntries.id, entryId));
     if (!entry) throw new ApiError(404, 'NOT_FOUND', 'Tournament entry does not exist.');
-    const account = await getAccountSummary(this.db, this.market, entryId);
+    let accountMarket = this.market;
+    if (entry) {
+      const [tournament] = await this.db
+        .select({ status: tournaments.status })
+        .from(tournaments)
+        .where(eq(tournaments.id, entry.tournamentId));
+      if (tournament && ['FINALIZING', 'COMPLETED'].includes(tournament.status)) {
+        const settlementMarks = await this.db
+          .select()
+          .from(tournamentSettlementMarks)
+          .where(eq(tournamentSettlementMarks.tournamentId, entry.tournamentId));
+        if (settlementMarks.length === SUPPORTED_SYMBOLS.length) {
+          const bySymbol = new Map(settlementMarks.map((mark) => [mark.symbol, mark]));
+          accountMarket = {
+            getSnapshot(symbol) {
+              const mark = bySymbol.get(symbol);
+              if (!mark) throw new Error(`Missing settlement mark for ${symbol}`);
+              return {
+                symbol,
+                price: parsePrice(mark.price),
+                marketTimestamp: mark.marketTimestamp,
+                receivedAt: mark.lockedAt,
+                source: `settlement:${mark.source}`,
+                status: 'LIVE',
+                executionEligible: false,
+              };
+            },
+          };
+        }
+      }
+    }
+    const account = await getAccountSummary(this.db, accountMarket, entryId);
     const protectionRows = await this.db
       .select({
         symbol: orders.symbol,

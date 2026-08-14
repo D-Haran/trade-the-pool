@@ -7,7 +7,8 @@ TanStack Query, Zustand, and TradingView Lightweight Charts.
 ## Routes
 
 - `/` — product landing page backed by the live tournament API
-- `/login` — development identity selector when development auth is enabled
+- `/login` — Wallet Standard sign-in plus the development selector when enabled
+- `/account` — browser wallet connection and application wallet-link management
 - `/tournaments` — live, upcoming, and completed tournament discovery
 - `/tournaments/:slug` — tournament rules, prize pool, bankroll terms, entries, and leaderboard
 - `/dashboard` — the authenticated user's entries and results
@@ -32,9 +33,23 @@ Current Entry Price, podium projection, cash line, entry cap, entries, and real 
 terminal shows the entry's fixed Starting Bankroll separately from the current Prize Pool.
 
 The API client sends cookies with every request and normalizes the API's success and error
-envelopes. Authentication uses the server-issued HttpOnly session cookie. The development login
-selector discovers its identities from the development API and is not presented as production
-authentication.
+envelopes. Authentication uses the server-issued HttpOnly session cookie. Wallets are discovered
+through the shared Wallet Standard registry and use `solana:signIn` with a
+`solana:signMessage` fallback over the exact server payload. The UI never holds keys, uses RPC, or
+creates transactions. The development login selector discovers identities from the development
+API and is explicitly separated from wallet authentication.
+
+The account route distinguishes a browser wallet connection from a durable wallet link. It shows
+canonical abbreviated addresses, verification cluster, primary status, link/unlink controls, and
+a standalone frontend disconnect action. Unlinking does not log out; disconnecting does not unlink;
+logout does neither. No balance, deposit, or withdrawal UI exists in this phase. See
+[`wallet-authentication.md`](wallet-authentication.md).
+
+Only an authoritative `401 AUTHENTICATION_REQUIRED` clears browser session state. A failed initial
+session check renders a retryable unavailable state; cached authenticated views remain associated
+with the same user during transient 5xx, Redis, offline, and reconnect failures. Login/logout reset
+the WebSocket handshake, and logout removes private subscriptions. See
+[`authentication.md`](authentication.md) for the complete contract.
 
 ## Realtime lifecycle
 
@@ -45,8 +60,9 @@ snapshots for account, pool, status, and leaderboard events.
 
 Disconnects use bounded exponential backoff with jitter. Browser offline/online transitions are
 handled explicitly. After every reconnect, the app refetches REST state before treating the view
-as synchronized because V1 intentionally has no event replay. An expired session clears private
-state and sends the user back through authentication.
+as synchronized because V1 intentionally has no event replay. An expired or explicitly invalidated
+session clears private state and sends the user back through authentication. Transport reconnects
+and `AUTHENTICATION_UNAVAILABLE` do not.
 
 ## Trading and multiple entries
 
@@ -65,12 +81,18 @@ accounting calculations.
 
 ## Market chart
 
-The chart initializes from server-generated OHLC candles and applies authoritative market ticks
-imperatively. It supports candlestick/line display; 1m, 5m, 15m, 1h, 4h, and 1d intervals; SMA,
-EMA, Bollinger Bands, RSI, and MACD; reset; and fullscreen. The deterministic provider does not
-have genuine volume, so VWAP and volume are shown as unavailable rather than synthesized. Prices
-older than 30 seconds are presented as stale and order submission is paused until an authoritative
-update arrives.
+The chart initializes from normalized server OHLC, then merges incremental realtime candles by
+symbol, timeframe, and UTC bucket. It supports candlestick/line display; 1m, 5m, 15m, 1h, 4h, and
+1d intervals; SMA, EMA, VWAP, Bollinger Bands, RSI, MACD, and volume; reset; and fullscreen. VWAP
+and volume are unavailable when the provider has no genuine volume. Query cancellation, scoped
+subscriptions, and symbol checks prevent a slow prior-market request/event from overwriting a new
+selection. Backend freshness/deviation state pauses submission; the browser does not invent a
+local execution authority.
+
+Desktop places a compact Kraken-labelled market-depth/recent-trades panel between the chart and
+order ticket. Depth rows show exact price, size, cumulative size, spread, and restrained shading.
+Book updates are batched with `requestAnimationFrame`; trades use a bounded list. Both bootstrap
+from REST and use the selected market's existing WebSocket topic thereafter.
 
 The terminal keeps a persistent `PAPER` identity and selected market preferences in Zustand. Its
 desktop layout keeps the watchlist, chart, order ticket, tournament/account strip, and data tabs in

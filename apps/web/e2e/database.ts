@@ -12,6 +12,8 @@ export async function cleanFixtures(sql: postgres.Sql): Promise<void> {
   await sql`DELETE FROM orders WHERE entry_id IN (SELECT id FROM tournament_entries WHERE tournament_id IN (${E2E.tournamentId}, ${E2E.completedTournamentId}))`;
   await sql`DELETE FROM tournament_entries WHERE tournament_id IN (${E2E.tournamentId}, ${E2E.completedTournamentId})`;
   await sql`DELETE FROM tournament_entry_fee_tiers WHERE tournament_id IN (${E2E.tournamentId}, ${E2E.completedTournamentId})`;
+  await sql`DELETE FROM tournament_settlement_marks WHERE tournament_id IN (${E2E.tournamentId}, ${E2E.completedTournamentId})`;
   await sql`DELETE FROM tournaments WHERE id IN (${E2E.tournamentId}, ${E2E.completedTournamentId})`;
+  await sql`DELETE FROM user_wallets WHERE user_id IN (${E2E.userId}, ${E2E.otherUserId})`;
   await sql`DELETE FROM users WHERE id IN (${E2E.userId}, ${E2E.otherUserId})`;
 }

@@ -1,4 +1,4 @@
-import type { MarketSymbol } from '@trade-the-pool/market-data';
+import type { MarketPriceSnapshot, MarketSymbol } from '@trade-the-pool/market-data';
 import {
   DECIMAL_SCALE,
   applyBasisPoints,
@@ -117,6 +117,17 @@ export function assertFreshSnapshot(marketTimestamp: Date, now: Date, thresholdM
     throw new DomainError(
       'STALE_MARKET_PRICE',
       'Authoritative market price is stale or future-dated',
+    );
+}
+
+export function assertExecutionEligibleSnapshot(snapshot: MarketPriceSnapshot): void {
+  if (
+    snapshot.executionEligible === false ||
+    ['STALE', 'RECONNECTING', 'UNAVAILABLE', 'DEGRADED'].includes(snapshot.status ?? '')
+  )
+    throw new DomainError(
+      'STALE_MARKET_PRICE',
+      'Authoritative market pricing is stale, degraded, or unavailable',
     );
 }
 

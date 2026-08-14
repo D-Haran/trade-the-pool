@@ -4,12 +4,16 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useEffect, useState, type ReactNode } from 'react';
 import { ToastProvider } from './ui/toast';
 import { queryKeys } from '@/lib/query-keys';
+import { clearSessionScopedQueries } from '@/lib/session-cache';
+import { realtimeClient } from '@/lib/realtime-client';
+import { WalletStandardProvider } from '@/lib/wallet-standard';
 
 function SessionExpiryBridge({ queryClient }: { queryClient: QueryClient }) {
   useEffect(() => {
     const expire = () => {
+      realtimeClient.authenticationChanged(false);
+      clearSessionScopedQueries(queryClient);
       queryClient.setQueryData(queryKeys.session, null);
-      void queryClient.removeQueries({ queryKey: ['entries'] });
     };
     window.addEventListener('ttp:session-expired', expire);
     return () => window.removeEventListener('ttp:session-expired', expire);
@@ -35,10 +39,12 @@ export function Providers({ children }: { children: ReactNode }) {
   );
   return (
     <QueryClientProvider client={queryClient}>
-      <ToastProvider>
-        <SessionExpiryBridge queryClient={queryClient} />
-        {children}
-      </ToastProvider>
+      <WalletStandardProvider>
+        <ToastProvider>
+          <SessionExpiryBridge queryClient={queryClient} />
+          {children}
+        </ToastProvider>
+      </WalletStandardProvider>
     </QueryClientProvider>
   );
 }

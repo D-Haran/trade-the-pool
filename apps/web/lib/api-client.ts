@@ -7,8 +7,10 @@ import type {
   FillHistoryDto,
   LeaderboardPageDto,
   MarketCandleDto,
+  MarketOrderBookDto,
   MarketSnapshotDto,
   MarketSymbolDto,
+  MarketTradeDto,
   OrderHistoryDto,
   OrderRequestDto,
   OrderResultDto,
@@ -18,6 +20,8 @@ import type {
   PositionDto,
   TournamentDto,
   UserDto,
+  UserWalletDto,
+  WalletChallengeDto,
 } from '@trade-the-pool/shared';
 
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
@@ -35,7 +39,24 @@ export class ApiClientError extends Error {
   }
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+export function isAuthoritativeAuthenticationFailure(error: unknown): boolean {
+  return (
+    error instanceof ApiClientError &&
+    error.status === 401 &&
+    error.code === 'AUTHENTICATION_REQUIRED'
+  );
+}
+
+function announceAuthenticationFailure(error: ApiClientError): void {
+  if (isAuthoritativeAuthenticationFailure(error) && typeof window !== 'undefined')
+    window.dispatchEvent(new Event('ttp:session-expired'));
+}
+
+async function request<T>(
+  path: string,
+  init: RequestInit = {},
+  announceAuthFailure = true,
+): Promise<T> {
   let response: Response;
   try {
     response = await fetch(`${API_URL}${path}`, {
@@ -53,13 +74,15 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const body = (await response.json().catch(() => null)) as ApiErrorBody | T | null;
   if (!response.ok) {
     const error = body && typeof body === 'object' && 'error' in body ? body.error : null;
-    throw new ApiClientError(
+    const clientError = new ApiClientError(
       response.status,
       error?.code ?? 'REQUEST_FAILED',
       error?.message ?? 'The request could not be completed.',
       error?.requestId,
       error?.details,
     );
+    if (announceAuthFailure) announceAuthenticationFailure(clientError);
+    throw clientError;
   }
   return body as T;
 }
@@ -83,12 +106,19 @@ export type CreatedEntryDto = {
   createdAt: string;
 };
 
+export type WalletProofDto = {
+  challengeId: string;
+  address: string;
+  signature: string;
+  signedMessage: string;
+};
+
 export const api = {
   async session(): Promise<UserDto | null> {
     try {
-      return (await request<ApiEnvelope<{ user: UserDto }>>('/v1/auth/me')).data.user;
+      return (await request<ApiEnvelope<{ user: UserDto }>>('/v1/auth/me', {}, false)).data.user;
     } catch (error) {
-      if (error instanceof ApiClientError && error.status === 401) return null;
+      if (isAuthoritativeAuthenticationFailure(error)) return null;
       throw error;
     }
   },
@@ -99,6 +129,34 @@ export const api = {
       body: JSON.stringify({ userId }),
     }),
   logout: () => request<void>('/v1/auth/logout', { method: 'POST' }),
+  walletChallenge: (address: string) =>
+    request<ApiEnvelope<WalletChallengeDto>>('/v1/auth/wallet/challenge', {
+      method: 'POST',
+      body: JSON.stringify({ address }),
+    }),
+  walletLogin: (proof: WalletProofDto) =>
+    request<ApiEnvelope<{ user: UserDto; expiresInSeconds: number }>>('/v1/auth/wallet/verify', {
+      method: 'POST',
+      body: JSON.stringify(proof),
+    }),
+  wallets: () => request<ApiEnvelope<UserWalletDto[]>>('/v1/me/wallets'),
+  walletLinkChallenge: (address: string) =>
+    request<ApiEnvelope<WalletChallengeDto>>('/v1/me/wallets/challenge', {
+      method: 'POST',
+      body: JSON.stringify({ address }),
+    }),
+  linkWallet: (proof: WalletProofDto) =>
+    request<ApiEnvelope<UserWalletDto>>('/v1/me/wallets/verify', {
+      method: 'POST',
+      body: JSON.stringify(proof),
+    }),
+  unlinkWallet: (id: string) =>
+    request<void>(`/v1/me/wallets/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  makePrimaryWallet: (id: string) =>
+    request<ApiEnvelope<UserWalletDto>>(`/v1/me/wallets/${encodeURIComponent(id)}/primary`, {
+      method: 'PUT',
+      body: JSON.stringify({}),
+    }),
   tournaments: (query = 'pageSize=100') => request<Page<TournamentDto>>(`/v1/tournaments?${query}`),
   tournament: (identifier: string) =>
     request<ApiEnvelope<TournamentDto>>(`/v1/tournaments/${encodeURIComponent(identifier)}`),
@@ -123,10 +181,24 @@ export const api = {
     ),
   market: (symbol: MarketSymbolDto) =>
     request<ApiEnvelope<MarketSnapshotDto>>(`/v1/markets/${symbol}`),
-  candles: (symbol: MarketSymbolDto, interval: CandleIntervalDto, limit = 240) =>
+  candles: (
+    symbol: MarketSymbolDto,
+    interval: CandleIntervalDto,
+    limit = 240,
+    signal?: AbortSignal,
+  ) =>
     request<ApiEnvelope<MarketCandleDto[]>>(
       `/v1/markets/${symbol}/candles?interval=${interval}&limit=${limit}`,
+      { signal },
     ),
+  book: (symbol: MarketSymbolDto, depth = 25, signal?: AbortSignal) =>
+    request<ApiEnvelope<MarketOrderBookDto>>(`/v1/markets/${symbol}/book?depth=${depth}`, {
+      signal,
+    }),
+  marketTrades: (symbol: MarketSymbolDto, limit = 50, signal?: AbortSignal) =>
+    request<ApiEnvelope<MarketTradeDto[]>>(`/v1/markets/${symbol}/trades?limit=${limit}`, {
+      signal,
+    }),
   order: (body: OrderRequestDto, idempotencyKey: string) =>
     request<ApiEnvelope<OrderResultDto>>('/v1/orders', {
       method: 'POST',

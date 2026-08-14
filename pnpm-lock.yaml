@@ -58,6 +58,12 @@ importers:
       '@fastify/websocket':
         specifier: ^11
         version: 11.3.0
+      '@solana/wallet-standard-features':
+        specifier: ^1.4.0
+        version: 1.4.0
+      '@solana/wallet-standard-util':
+        specifier: ^1.1.3
+        version: 1.1.3
       '@trade-the-pool/database':
         specifier: workspace:*
         version: link:../../packages/database
@@ -70,6 +76,9 @@ importers:
       '@trade-the-pool/trading-engine':
         specifier: workspace:*
         version: link:../../packages/trading-engine
+      bs58:
+        specifier: ^6.0.0
+        version: 6.0.0
       drizzle-orm:
         specifier: ^0.38.2
         version: 0.38.4(@types/react@19.2.18)(postgres@3.4.9)(react@19.2.8)
@@ -79,6 +88,9 @@ importers:
       redis:
         specifier: ^5
         version: 5.12.1
+      tweetnacl:
+        specifier: ^1.0.3
+        version: 1.0.3
       zod:
         specifier: ^3.24.1
         version: 3.25.76
@@ -101,6 +113,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@solana/wallet-standard-features':
+        specifier: ^1.4.0
+        version: 1.4.0
       '@tanstack/react-query':
         specifier: ^5.101.4
         version: 5.101.4(react@19.2.8)
@@ -110,6 +125,15 @@ importers:
       '@trade-the-pool/ui':
         specifier: workspace:*
         version: link:../../packages/ui
+      '@wallet-standard/app':
+        specifier: ^1.1.1
+        version: 1.1.1
+      '@wallet-standard/base':
+        specifier: ^1.1.0
+        version: 1.1.1
+      '@wallet-standard/features':
+        specifier: ^1.1.1
+        version: 1.1.1
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
@@ -184,6 +208,13 @@ importers:
       '@trade-the-pool/shared':
         specifier: workspace:*
         version: link:../shared
+      ws:
+        specifier: ^8.18.0
+        version: 8.21.3
+    devDependencies:
+      '@types/ws':
+        specifier: ^8.5.13
+        version: 8.18.1
 
   packages/shared:
     dependencies:
@@ -1639,6 +1670,20 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  '@noble/curves@1.9.7':
+    resolution:
+      {
+        integrity: sha512-gbKGcRUYIjA3/zCCNaWDciTMFI0dCkvou3TL8Zmy5Nc7sJ47a0jtOeZoTaMxkuqRo9cRhjOdZJXegxYE5FN/xw==,
+      }
+    engines: { node: ^14.21.3 || >=16 }
+
+  '@noble/hashes@1.8.0':
+    resolution:
+      {
+        integrity: sha512-jCs9ldd7NwzpgXDIf6P3+NrHh9/sD6CQdxHyjQI+h/6rDNo88ypBxxz45UDuZHz9r3tNz7N/VInSVoVdtXEI4A==,
+      }
+    engines: { node: ^14.21.3 || >=16 }
+
   '@nodelib/fs.scandir@2.1.5':
     resolution:
       {
@@ -1931,6 +1976,27 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  '@solana/wallet-standard-chains@1.1.2':
+    resolution:
+      {
+        integrity: sha512-EZobEGclDBAFplpJC5F3d/s8Xnlqc5isNKuPrd5o9ZPZ7tWN84O0e68yIZ8MAOj9V7ieRadNiHtql7uIXCTyXg==,
+      }
+    engines: { node: '>=22' }
+
+  '@solana/wallet-standard-features@1.4.0':
+    resolution:
+      {
+        integrity: sha512-f0tAdqwM2aL6CiFbIgt9h5zKFp+mgY/iNGwoxPMTj9VSTeQj7d1GGSmWhZw0XWoZ4N/1tnKTKmYFq+Dyq08jRw==,
+      }
+    engines: { node: '>=22' }
+
+  '@solana/wallet-standard-util@1.1.3':
+    resolution:
+      {
+        integrity: sha512-aweR5y5FjYaeS9TkoqAWERFpGUj2MJepsDhcekCuoPLcNCquJL85Nsnuy01tBybspN5+Y09SWkxwsODOFGSfkg==,
+      }
+    engines: { node: '>=22' }
+
   '@swc/helpers@0.5.15':
     resolution:
       {
@@ -2176,6 +2242,27 @@ packages:
         integrity: sha512-v0psaMSkNJ3A2NMrUEHFRzJtDPFn+/VWZ5WxImB21T9fjucJRmS7xCS3ppEnARb9y11OAzaD+P2Ps+b+BGX5iQ==,
       }
 
+  '@wallet-standard/app@1.1.1':
+    resolution:
+      {
+        integrity: sha512-WDGwoByhP5gwHH01r5EaLgQdLVkACPCdOMQhmhn8rsm10h/siSgTorShzBxrn0ExSPof+Lu+C3TfgqBrPa1xoQ==,
+      }
+    engines: { node: '>=22' }
+
+  '@wallet-standard/base@1.1.1':
+    resolution:
+      {
+        integrity: sha512-gggIHTtxicF9XFMQ12DkfS6NAG92Ak795JeSA7f2whAQ6Y3AkMWWuCMxSZXG2NIPN42kEaZSNVjqMsJRaJRxMQ==,
+      }
+    engines: { node: '>=22' }
+
+  '@wallet-standard/features@1.1.1':
+    resolution:
+      {
+        integrity: sha512-aCWYmVeSCGViyEU5k7GMoW8zxE4Gs+C1s1Pp2XLesvSNlnZ4PMES9HUnTB3hl0b3RVj7C61yze3IWyrncqg4MA==,
+      }
+    engines: { node: '>=22' }
+
   abstract-logging@2.0.1:
     resolution:
       {
@@ -2296,6 +2383,12 @@ packages:
       }
     engines: { node: 18 || 20 || >=22 }
 
+  base-x@5.0.1:
+    resolution:
+      {
+        integrity: sha512-M7uio8Zt++eg3jPj+rHMfCC+IuygQHHCOU+IYsVtik6FWjuYpVt/+MRKcgsAMHh8mMFAwnB+Bs+mTrFiXjMzKg==,
+      }
+
   baseline-browser-mapping@2.11.14:
     resolution:
       {
@@ -2338,6 +2431,12 @@ packages:
       }
     engines: { node: ^6 || ^7 || ^8 || ^9 || ^10 || ^11 || ^12 || >=13.7 }
     hasBin: true
+
+  bs58@6.0.0:
+    resolution:
+      {
+        integrity: sha512-PD0wEnEYg6ijszw/u8s+iI3H17cTymlrwkKhDhPZq+Sokl3AU4htyBFTjAeNAlCCmg0f53g6ih3jATyCKftTfw==,
+      }
 
   buffer-from@1.1.2:
     resolution:
@@ -4145,6 +4244,12 @@ packages:
       }
     hasBin: true
 
+  tweetnacl@1.0.3:
+    resolution:
+      {
+        integrity: sha512-6rt+RN7aOi1nGMyC4Xa5DdYiukl2UWCbcJft7YhxReBGQD7OAM8Pbxw6YMo4r2diNEA8FEmu32YOn9rhaiE5yw==,
+      }
+
   type-check@0.4.0:
     resolution:
       {
@@ -4958,6 +5063,12 @@ snapshots:
   '@next/swc-win32-x64-msvc@15.5.23':
     optional: true
 
+  '@noble/curves@1.9.7':
+    dependencies:
+      '@noble/hashes': 1.8.0
+
+  '@noble/hashes@1.8.0': {}
+
   '@nodelib/fs.scandir@2.1.5':
     dependencies:
       '@nodelib/fs.stat': 2.0.5
@@ -5072,6 +5183,21 @@ snapshots:
 
   '@rollup/rollup-win32-x64-msvc@4.62.4':
     optional: true
+
+  '@solana/wallet-standard-chains@1.1.2':
+    dependencies:
+      '@wallet-standard/base': 1.1.1
+
+  '@solana/wallet-standard-features@1.4.0':
+    dependencies:
+      '@wallet-standard/base': 1.1.1
+      '@wallet-standard/features': 1.1.1
+
+  '@solana/wallet-standard-util@1.1.3':
+    dependencies:
+      '@noble/curves': 1.9.7
+      '@solana/wallet-standard-chains': 1.1.2
+      '@solana/wallet-standard-features': 1.4.0
 
   '@swc/helpers@0.5.15':
     dependencies:
@@ -5253,6 +5379,16 @@ snapshots:
       loupe: 3.2.1
       tinyrainbow: 1.2.0
 
+  '@wallet-standard/app@1.1.1':
+    dependencies:
+      '@wallet-standard/base': 1.1.1
+
+  '@wallet-standard/base@1.1.1': {}
+
+  '@wallet-standard/features@1.1.1':
+    dependencies:
+      '@wallet-standard/base': 1.1.1
+
   abstract-logging@2.0.1: {}
 
   acorn-jsx@5.3.2(acorn@8.18.0):
@@ -5316,6 +5452,8 @@ snapshots:
 
   balanced-match@4.0.4: {}
 
+  base-x@5.0.1: {}
+
   baseline-browser-mapping@2.11.14: {}
 
   binary-extensions@2.3.0: {}
@@ -5340,6 +5478,10 @@ snapshots:
       electron-to-chromium: 1.5.406
       node-releases: 2.0.53
       update-browserslist-db: 1.3.1(browserslist@4.28.8)
+
+  bs58@6.0.0:
+    dependencies:
+      base-x: 5.0.1
 
   buffer-from@1.1.2: {}
 
@@ -6413,6 +6555,8 @@ snapshots:
       '@turbo/linux-arm64': 2.10.9
       '@turbo/windows-64': 2.10.9
       '@turbo/windows-arm64': 2.10.9
+
+  tweetnacl@1.0.3: {}
 
   type-check@0.4.0:
     dependencies:

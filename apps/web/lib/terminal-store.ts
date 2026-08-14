@@ -3,7 +3,7 @@ import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 
 export type ChartType = 'CANDLES' | 'LINE';
-export type IndicatorKey = 'SMA' | 'EMA' | 'BOLLINGER' | 'RSI' | 'MACD';
+export type IndicatorKey = 'SMA' | 'EMA' | 'VWAP' | 'BOLLINGER' | 'RSI' | 'MACD' | 'VOLUME';
 export type IndicatorPreferences = Record<IndicatorKey, { enabled: boolean; period: number }>;
 export type TerminalTab =
   'POSITIONS' | 'OPEN_ORDERS' | 'ORDER_HISTORY' | 'TRADES' | 'PERFORMANCE' | 'LEADERBOARD';
@@ -11,9 +11,11 @@ export type TerminalTab =
 const defaultIndicators: IndicatorPreferences = {
   SMA: { enabled: false, period: 20 },
   EMA: { enabled: true, period: 9 },
+  VWAP: { enabled: false, period: 20 },
   BOLLINGER: { enabled: false, period: 20 },
   RSI: { enabled: false, period: 14 },
   MACD: { enabled: false, period: 12 },
+  VOLUME: { enabled: true, period: 20 },
 };
 
 type TerminalState = {

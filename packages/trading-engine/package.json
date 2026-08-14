@@ -10,7 +10,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests --exclude '**/*.integration.test.ts'",
-    "test:integration": "pnpm --filter @trade-the-pool/database db:migrate && vitest run src/entry-creation.integration.test.ts && vitest run src/trading.integration.test.ts && vitest run src/professional-trading.integration.test.ts"
+    "test:integration": "pnpm --filter @trade-the-pool/database db:migrate && vitest run src/entry-creation.integration.test.ts && vitest run src/trading.integration.test.ts && vitest run src/professional-trading.integration.test.ts && vitest run src/settlement.integration.test.ts"
   },
   "dependencies": {
     "@trade-the-pool/database": "workspace:*",

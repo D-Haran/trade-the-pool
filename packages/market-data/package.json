@@ -12,6 +12,10 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@trade-the-pool/shared": "workspace:*"
+    "@trade-the-pool/shared": "workspace:*",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.13"
   }
 }

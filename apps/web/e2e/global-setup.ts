@@ -42,6 +42,8 @@ export default async function globalSetup(): Promise<void> {
   await sql.end();
   const redis = createClient({ url: process.env.REDIS_URL ?? 'redis://127.0.0.1:6379' });
   await redis.connect();
+  const rateKeys = await redis.keys('rate:*');
+  if (rateKeys.length) await redis.del(rateKeys);
   await redis.del([
     `projection:tournament:${E2E.tournamentId}:leaderboard:v1`,
     `projection:tournament:${E2E.completedTournamentId}:leaderboard:v1`,

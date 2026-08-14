@@ -33,6 +33,7 @@ import {
 import { DEFAULT_EXECUTION_CONFIG, type ExecutionConfig } from './config.js';
 import {
   accountEquity,
+  assertExecutionEligibleSnapshot,
   assertFreshSnapshot,
   assertTradable,
   buyPosition,
@@ -152,7 +153,14 @@ async function authoritativeSnapshot(
   now: Date,
   config: ExecutionConfig,
 ) {
-  const snapshot = await latestAuthoritativeSnapshot(provider, symbol);
+  let snapshot: Awaited<ReturnType<typeof latestAuthoritativeSnapshot>>;
+  try {
+    snapshot = await latestAuthoritativeSnapshot(provider, symbol);
+  } catch (error) {
+    if (error instanceof DomainError) throw error;
+    throw new DomainError('STALE_MARKET_PRICE', 'Authoritative market pricing is unavailable');
+  }
+  assertExecutionEligibleSnapshot(snapshot);
   assertFreshSnapshot(snapshot.marketTimestamp, now, config.stalePriceThresholdMs);
   return snapshot;
 }

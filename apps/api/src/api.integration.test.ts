@@ -3,7 +3,8 @@ import { createDatabase } from '@trade-the-pool/database';
 import { DeterministicMarketPriceSource } from '@trade-the-pool/market-data';
 import WebSocket from 'ws';
 import { buildApp } from './app.js';
-import { RedisKeyValueStore } from './infrastructure.js';
+import { sessionKey } from './auth.js';
+import { RedisKeyValueStore, type KeyValueStore } from './infrastructure.js';
 import { RealtimeHub, connectMarketRealtime } from './realtime.js';
 import { AccountSnapshotService, LeaderboardService, TradingApiService } from './services.js';
 
@@ -21,19 +22,26 @@ const trading = new TradingApiService(connection.db, market, snapshots, leaderbo
 const disconnectMarket = connectMarketRealtime(market, hub, leaderboards, (symbol) =>
   trading.processMarketTick(symbol),
 );
+const apiConfig = {
+  NODE_ENV: 'test' as const,
+  DEV_AUTH_ENABLED: true,
+  API_DOCS_ENABLED: true,
+  TRUST_PROXY: false,
+  CORS_ALLOWED_ORIGINS: 'http://localhost:3000',
+  SESSION_TTL_SECONDS: 3600,
+  WALLET_AUTH_ENABLED: true,
+  SOLANA_CLUSTER: 'devnet' as const,
+  WALLET_AUTH_ORIGIN: 'http://localhost:3000',
+  WALLET_AUTH_DOMAIN: 'localhost:3000',
+  WALLET_CHALLENGE_TTL_SECONDS: 300,
+};
 const app = await buildApp({
   db: connection.db,
   market,
   store,
   hub,
   trading,
-  config: {
-    NODE_ENV: 'test',
-    DEV_AUTH_ENABLED: true,
-    API_DOCS_ENABLED: true,
-    CORS_ALLOWED_ORIGINS: 'http://localhost:3000',
-    SESSION_TTL_SECONDS: 3600,
-  },
+  config: apiConfig,
 });
 
 const suffix = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -53,7 +61,13 @@ async function login(id: string): Promise<string> {
   });
   expect(response.statusCode).toBe(200);
   const header = response.headers['set-cookie'];
-  return (Array.isArray(header) ? header[0] : header)!.split(';')[0];
+  const value = Array.isArray(header) ? header[0] : header;
+  expect(value).toContain('HttpOnly');
+  expect(value).toContain('SameSite=Lax');
+  expect(value).toContain('Path=/');
+  expect(value).toContain('Max-Age=3600');
+  expect(value).not.toContain('Secure');
+  return value!.split(';')[0];
 }
 
 function websocketMessages(socket: WebSocket) {
@@ -82,6 +96,8 @@ function websocketMessages(socket: WebSocket) {
 
 beforeAll(async () => {
   await store.connect();
+  const staleRateKeys = await store.client.keys('rate:*');
+  if (staleRateKeys.length) await store.client.del(staleRateKeys);
   const [user] = await connection.client`
     INSERT INTO users (display_name) VALUES (${`API Trader ${suffix}`}) RETURNING id
   `;
@@ -162,12 +178,31 @@ describe('V1 HTTP API', () => {
   });
 
   it('provides authoritative market snapshots and deterministic candle history', async () => {
+    const markets = await app.inject({ method: 'GET', url: '/v1/markets' });
+    expect(markets.statusCode).toBe(200);
+    expect(markets.json().data.map((item: { symbol: string }) => item.symbol)).toEqual([
+      'BTC-USD',
+      'ETH-USD',
+      'SOL-USD',
+    ]);
     const snapshot = await app.inject({ method: 'GET', url: '/v1/markets/BTC-USD' });
     expect(snapshot.statusCode).toBe(200);
     expect(snapshot.json().data).toMatchObject({
       symbol: 'BTC-USD',
       price: '100000.00000000',
+      markPrice: '100000.00000000',
       source: 'deterministic-memory-v1',
+      dataMode: 'fake',
+      status: 'LIVE',
+      exchangeStatus: 'LIVE',
+      availability: 'ACTIVE',
+      provenance: {
+        currentPrice: 'deterministic-memory-v1',
+        historicalCandles: 'deterministic-memory-v1',
+        orderBook: 'deterministic-memory-v1',
+        recentTrades: 'deterministic-memory-v1',
+        authoritativeMark: 'deterministic-memory-v1',
+      },
     });
 
     const candles = await app.inject({
@@ -176,13 +211,48 @@ describe('V1 HTTP API', () => {
     });
     expect(candles.statusCode).toBe(200);
     expect(candles.json().data).toHaveLength(24);
-    expect(candles.json().data.at(-1)).toMatchObject({ close: '100000.00000000' });
+    expect(candles.json().data.at(-1)).toMatchObject({
+      close: '100000.00000000',
+      volume: null,
+    });
+    expect(candles.json().provenance).toBe('deterministic-memory-v1');
+
+    const book = await app.inject({
+      method: 'GET',
+      url: '/v1/markets/BTC-USD/book?depth=10',
+    });
+    expect(book.statusCode).toBe(200);
+    expect(book.json().data).toMatchObject({
+      symbol: 'BTC-USD',
+      venue: 'Deterministic',
+      status: 'LIVE',
+    });
+    expect(book.json().data.bids).toHaveLength(10);
+    expect(book.json().data.asks).toHaveLength(10);
+    expect(book.json().provenance).toBe('deterministic-memory-v1');
+
+    const trades = await app.inject({ method: 'GET', url: '/v1/markets/BTC-USD/trades' });
+    expect(trades.statusCode).toBe(200);
+    expect(trades.json().data).toEqual([]);
+    expect(trades.json().provenance).toBe('deterministic-memory-v1');
+
+    const health = await app.inject({ method: 'GET', url: '/health/market-data' });
+    expect(health.statusCode).toBe(200);
+    expect(health.json()).toMatchObject({
+      marketData: {
+        mode: 'fake',
+        components: { currentPrice: 'deterministic-memory-v1' },
+      },
+      realtime: { subscriberCount: 0, topicCount: 0 },
+    });
   });
 
   it('identifies sessions, rejects invalid/expired sessions, and invalidates logout', async () => {
     const me = await app.inject({ method: 'GET', url: '/v1/auth/me', headers: { cookie } });
     expect(me.statusCode).toBe(200);
     expect(me.json().data.user.id).toBe(userId);
+    const activeSessionId = cookie.slice('ttp_session='.length);
+    expect(await store.ttl(sessionKey(activeSessionId))).toBeGreaterThan(3500);
 
     const invalid = await app.inject({
       method: 'GET',
@@ -191,16 +261,47 @@ describe('V1 HTTP API', () => {
     });
     expect(invalid.statusCode).toBe(401);
 
+    const expiredId = 'a'.repeat(43);
     await store.set(
-      'session:expired-test',
+      sessionKey(expiredId),
       JSON.stringify({ userId, expiresAt: new Date(0).toISOString() }),
     );
     const expired = await app.inject({
       method: 'GET',
       url: '/v1/auth/me',
-      headers: { cookie: 'ttp_session=expired-test' },
+      headers: { cookie: `ttp_session=${expiredId}` },
     });
     expect(expired.statusCode).toBe(401);
+    expect(await store.get(sessionKey(expiredId))).toBeNull();
+
+    const rotatedFrom = await login(userId);
+    const rotated = await app.inject({
+      method: 'POST',
+      url: '/v1/auth/dev/login',
+      headers: { cookie: rotatedFrom },
+      payload: { userId },
+    });
+    expect(rotated.statusCode).toBe(200);
+    const rotatedHeader = rotated.headers['set-cookie'];
+    const rotatedCookie = (Array.isArray(rotatedHeader) ? rotatedHeader[0] : rotatedHeader)!.split(
+      ';',
+    )[0];
+    expect(rotatedCookie).not.toBe(rotatedFrom);
+    expect(
+      (await app.inject({ method: 'GET', url: '/v1/auth/me', headers: { cookie: rotatedFrom } }))
+        .statusCode,
+    ).toBe(401);
+    expect(
+      (await app.inject({ method: 'GET', url: '/v1/auth/me', headers: { cookie: rotatedCookie } }))
+        .statusCode,
+    ).toBe(200);
+
+    const lostCookie = await login(userId);
+    await store.delete(sessionKey(lostCookie.slice('ttp_session='.length)));
+    expect(
+      (await app.inject({ method: 'GET', url: '/v1/auth/me', headers: { cookie: lostCookie } }))
+        .statusCode,
+    ).toBe(401);
 
     const temporaryCookie = await login(userId);
     expect(
@@ -221,6 +322,61 @@ describe('V1 HTTP API', () => {
         })
       ).statusCode,
     ).toBe(401);
+  });
+
+  it('enforces exact browser origins for CSRF and credentialed CORS', async () => {
+    const rejected = await app.inject({
+      method: 'POST',
+      url: '/v1/auth/logout',
+      headers: { cookie, origin: 'https://attacker.example', 'sec-fetch-site': 'cross-site' },
+    });
+    expect(rejected.statusCode).toBe(403);
+    expect(rejected.json().error.code).toBe('CSRF_VALIDATION_FAILED');
+    expect(
+      (await app.inject({ method: 'GET', url: '/v1/auth/me', headers: { cookie } })).statusCode,
+    ).toBe(200);
+
+    const preflight = await app.inject({
+      method: 'OPTIONS',
+      url: '/v1/orders',
+      headers: {
+        origin: 'http://localhost:3000',
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'content-type,idempotency-key',
+      },
+    });
+    expect(preflight.headers['access-control-allow-origin']).toBe('http://localhost:3000');
+    expect(preflight.headers['access-control-allow-credentials']).toBe('true');
+    expect(preflight.headers['access-control-allow-origin']).not.toBe('*');
+  });
+
+  it('returns service unavailable, not unauthenticated, when Redis cannot be checked', async () => {
+    const unavailableStore: KeyValueStore = {
+      get: async () => {
+        throw new Error('Redis temporarily unavailable');
+      },
+      getDelete: (...args) => store.getDelete(...args),
+      set: (...args) => store.set(...args),
+      delete: (...args) => store.delete(...args),
+      ttl: (...args) => store.ttl(...args),
+      increment: (...args) => store.increment(...args),
+      ping: () => store.ping(),
+      close: async () => undefined,
+    };
+    const unavailableApp = await buildApp({
+      db: connection.db,
+      market,
+      store: unavailableStore,
+      config: apiConfig,
+    });
+    const response = await unavailableApp.inject({
+      method: 'GET',
+      url: '/v1/auth/me',
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(503);
+    expect(response.json().error.code).toBe('AUTHENTICATION_UNAVAILABLE');
+    await unavailableApp.close();
   });
 
   it('creates an owned entry without trusting userId and enforces ownership', async () => {
@@ -486,6 +642,49 @@ describe('V1 HTTP API', () => {
       WHERE id = ${tournamentId}
     `;
   });
+
+  it('keeps durable account state across logout, login, refresh, and API restart', async () => {
+    const firstSession = await login(userId);
+    const before = await app.inject({
+      method: 'GET',
+      url: `/v1/entries/${entryId}/orders?pageSize=100`,
+      headers: { cookie: firstSession },
+    });
+    expect(before.statusCode).toBe(200);
+    expect(before.json().pagination.total).toBeGreaterThan(0);
+
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/v1/auth/logout',
+          headers: { cookie: firstSession },
+        })
+      ).statusCode,
+    ).toBe(204);
+    const secondSession = await login(userId);
+    const entriesAfterLogin = await app.inject({
+      method: 'GET',
+      url: '/v1/me/entries?pageSize=100',
+      headers: { cookie: secondSession },
+    });
+    expect(entriesAfterLogin.json().data).toContainEqual(expect.objectContaining({ id: entryId }));
+
+    const restartedApp = await buildApp({
+      db: connection.db,
+      market,
+      store,
+      config: apiConfig,
+    });
+    const afterRestart = await restartedApp.inject({
+      method: 'GET',
+      url: `/v1/entries/${entryId}/orders?pageSize=100`,
+      headers: { cookie: secondSession },
+    });
+    expect(afterRestart.statusCode).toBe(200);
+    expect(afterRestart.json().data).toEqual(before.json().data);
+    await restartedApp.close();
+  });
 });
 
 describe('V1 WebSocket API', () => {
@@ -547,7 +746,26 @@ describe('V1 WebSocket API', () => {
     market.advancePrice('SOL-USD', '205.00', new Date(Date.now() + 1));
     expect(await next()).toMatchObject({
       topic: 'market:SOL-USD',
-      event: { type: 'market.price', price: '205.00000000' },
+      event: {
+        type: 'market.price',
+        price: '205.00000000',
+        markPrice: '205.00000000',
+        status: 'LIVE',
+        exchangeStatus: 'LIVE',
+      },
+    });
+    expect(await next()).toMatchObject({
+      topic: 'market:SOL-USD',
+      event: { type: 'market.trades', symbol: 'SOL-USD' },
+    });
+    for (const interval of ['1m', '5m', '15m', '1h', '4h', '1d'])
+      expect(await next()).toMatchObject({
+        topic: 'market:SOL-USD',
+        event: { type: 'market.candle', symbol: 'SOL-USD', interval },
+      });
+    expect(await next()).toMatchObject({
+      topic: 'market:SOL-USD',
+      event: { type: 'market.book', symbol: 'SOL-USD', venue: 'Deterministic' },
     });
     expect(await next()).toMatchObject({
       topic: `tournament:${tournamentId}`,
@@ -596,6 +814,8 @@ describe('V1 WebSocket API', () => {
     expect(await nextUnauthorized()).toMatchObject({ error: { code: 'AUTHORIZATION_DENIED' } });
     unauthorized.close();
 
+    const subscriptionRateKeys = await store.client.keys('rate:ws-subscription:*');
+    if (subscriptionRateKeys.length) await store.client.del(subscriptionRateKeys);
     const limited = new WebSocket(websocketUrl, {
       headers: { 'X-Forwarded-For': `203.0.113.${Math.floor(Math.random() * 200) + 1}` },
     });
@@ -612,6 +832,39 @@ describe('V1 WebSocket API', () => {
     limited.send(JSON.stringify({ action: 'subscribe', topic: 'market:ETH-USD' }));
     expect(await nextLimited()).toMatchObject({ error: { code: 'RATE_LIMITED' } });
     limited.close();
+  });
+
+  it('revokes private sockets on logout and revalidates before private subscriptions', async () => {
+    const logoutCookie = await login(userId);
+    const socket = new WebSocket(websocketUrl, { headers: { Cookie: logoutCookie } });
+    const next = websocketMessages(socket);
+    await new Promise<void>((resolve, reject) => {
+      socket.once('open', resolve);
+      socket.once('error', reject);
+    });
+    await next();
+    socket.send(JSON.stringify({ action: 'subscribe', topic: `entry:${entryId}` }));
+    expect(await next()).toMatchObject({ type: 'subscription.acknowledged' });
+    const logout = await app.inject({
+      method: 'POST',
+      url: '/v1/auth/logout',
+      headers: { cookie: logoutCookie },
+    });
+    expect(logout.statusCode).toBe(204);
+    expect(await next()).toMatchObject({ error: { code: 'AUTHENTICATION_REQUIRED' } });
+
+    const lostCookie = await login(userId);
+    const lostSocket = new WebSocket(websocketUrl, { headers: { Cookie: lostCookie } });
+    const nextLost = websocketMessages(lostSocket);
+    await new Promise<void>((resolve, reject) => {
+      lostSocket.once('open', resolve);
+      lostSocket.once('error', reject);
+    });
+    await nextLost();
+    await store.delete(sessionKey(lostCookie.slice('ttp_session='.length)));
+    lostSocket.send(JSON.stringify({ action: 'subscribe', topic: `entry:${entryId}` }));
+    expect(await nextLost()).toMatchObject({ error: { code: 'AUTHENTICATION_REQUIRED' } });
+    lostSocket.close();
   });
 });
 

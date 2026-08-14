@@ -5,6 +5,7 @@ import { ChevronDown, Radio, Search } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { cn } from '@/lib/cn';
 import { formatPrice } from '@/lib/format';
+import { marketDataStatusLabel } from '@/lib/market-data-status';
 
 const symbols: MarketSymbolDto[] = ['BTC-USD', 'ETH-USD', 'SOL-USD'];
 
@@ -24,11 +25,12 @@ export function MarketHeader({
   symbol: MarketSymbolDto;
   markets: Partial<Record<MarketSymbolDto, MarketSnapshotDto>>;
   onSelect: (symbol: MarketSymbolDto) => void;
-  freshness: 'LIVE' | 'DELAYED' | 'STALE' | 'RECONNECTING' | 'UNAVAILABLE';
+  freshness: 'LIVE' | 'DELAYED' | 'STALE' | 'RECONNECTING' | 'UNAVAILABLE' | 'DEGRADED';
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [search, setSearch] = useState('');
   const active = markets[symbol];
+  const displayStatus = marketDataStatusLabel(active?.dataMode, freshness);
   const filtered = useMemo(
     () => symbols.filter((item) => item.toLowerCase().includes(search.toLowerCase())),
     [search],
@@ -127,7 +129,7 @@ export function MarketHeader({
         ) : null}
       </dl>
       <span className={`market-freshness market-freshness--${freshness.toLowerCase()}`}>
-        <Radio aria-hidden="true" /> {freshness}
+        <Radio aria-hidden="true" /> {displayStatus}
       </span>
     </header>
   );

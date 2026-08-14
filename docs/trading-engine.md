@@ -95,7 +95,10 @@ Trading is allowed from the configured `tradingStartsAt` boundary until (but exc
 `tradingClosesAt`. The derived `TRADING_ACTIVE` and `ENTRY_CLOSED` phases are tradable;
 `ENTRY_CLOSED` stops new tournament entries but deliberately permits trading until the deadline.
 The engine uses only the provider's price and timestamp and rejects stale or future-dated
-snapshots.
+snapshots. In live mode that internal snapshot is the Pyth-backed `AUTHORITATIVE_MARK`, not the
+Kraken last trade displayed by the chart. Abnormal comparison-feed deviation marks the symbol
+degraded and blocks new execution. Limit, stop-market, take-profit, and stop-loss boundary checks
+all use that same authoritative mark; stale/degraded ticks pause conditional processing.
 
 Every professional order declares `OPEN` or `CLOSE`, `LONG` or `SHORT`, and `MARKET`, `LIMIT`, or
 `STOP_MARKET`. Open orders use dollar notional; closes use exact quantity or integer basis-point
@@ -104,6 +107,13 @@ orders are selected by indexed symbol/status order, processed deterministically,
 inside their transaction, and filled only from an authoritative tick. A full close cancels any
 remaining close siblings, giving attached protection OCO behavior. Open orders can be cancelled
 explicitly and expire deterministically after tournament trading closes.
+
+Tournament settlement first locks the tournament into `TRADING_CLOSED` and expires open orders.
+It then obtains all three fresh execution-eligible marks before its final write transaction, which
+persists one immutable mark per symbol, freezes exact entry equity/P&L, and completes the
+tournament atomically. If a mark is not trustworthy, the closed retry state remains but account
+values do not change. Completed snapshots and leaderboards reuse the stored marks, and idempotent
+settlement replay does not need a live feed.
 
 There is no real money, blockchain, leverage above 1x, derivatives, liquidation, or external
 exchange order routing. Development market volume is unavailable and is returned as `null`, never

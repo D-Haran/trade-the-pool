@@ -1,12 +1,15 @@
 'use client';
 
-import { ArrowRight, LockKeyhole, UserRound } from 'lucide-react';
+import { ArrowRight, ShieldCheck, UserRound } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiClientError } from '@/lib/api-client';
 import { queryKeys } from '@/lib/query-keys';
+import { clearSessionScopedQueries } from '@/lib/session-cache';
+import { realtimeClient } from '@/lib/realtime-client';
 import { Button } from './ui/button';
 import { ErrorState, LoadingState } from './ui/states';
+import { WalletIdentityActions } from './wallet-identity-actions';
 
 export function LoginPage({ returnTo }: { returnTo: string }) {
   const router = useRouter();
@@ -15,6 +18,8 @@ export function LoginPage({ returnTo }: { returnTo: string }) {
   const login = useMutation({
     mutationFn: api.login,
     onSuccess: ({ data }) => {
+      realtimeClient.authenticationChanged(true);
+      clearSessionScopedQueries(queryClient);
       queryClient.setQueryData(queryKeys.session, data.user);
       router.replace(returnTo);
     },
@@ -25,15 +30,28 @@ export function LoginPage({ returnTo }: { returnTo: string }) {
       <section className="login-panel">
         <div className="login-panel__intro">
           <span className="dev-label">
-            <LockKeyhole aria-hidden="true" /> Development only
+            <ShieldCheck aria-hidden="true" /> Wallet identity
           </span>
-          <h1>Select a local user.</h1>
+          <h1>Prove wallet ownership.</h1>
           <p>
-            This environment uses backend-issued development sessions. It is not production
-            authentication.
+            Sign a short-lived, human-readable message. Successful verification creates the same
+            secure server session used everywhere else.
           </p>
         </div>
         <div className="login-panel__users">
+          <WalletIdentityActions
+            mode="login"
+            onSuccess={(result) => {
+              const data = result as Awaited<ReturnType<typeof api.walletLogin>>;
+              realtimeClient.authenticationChanged(true);
+              clearSessionScopedQueries(queryClient);
+              queryClient.setQueryData(queryKeys.session, data.data.user);
+              router.replace(returnTo);
+            }}
+          />
+          <div className="auth-divider">
+            <span>Local development access</span>
+          </div>
           {users.isLoading ? <LoadingState label="Checking development access" /> : null}
           {unavailable ? (
             <ErrorState

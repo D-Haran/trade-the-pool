@@ -1,15 +1,22 @@
 'use client';
 
-import type { CandleIntervalDto, MarketCandleDto, MarketSymbolDto } from '@trade-the-pool/shared';
+import type {
+  CandleIntervalDto,
+  MarketCandleDto,
+  MarketSymbolDto,
+  PositionDto,
+} from '@trade-the-pool/shared';
 import {
   CandlestickSeries,
   ColorType,
   HistogramSeries,
+  LineStyle,
   LineSeries,
   createChart,
   type CandlestickData,
   type HistogramData,
   type IChartApi,
+  type IPriceLine,
   type ISeriesApi,
   type LineData,
   type SeriesType,
@@ -33,7 +40,7 @@ const intervalSeconds: Record<CandleIntervalDto, number> = {
   '1d': 86_400,
 };
 
-type ExactChartCandle = CandlestickData<UTCTimestamp>;
+type ExactChartCandle = CandlestickData<UTCTimestamp> & { volume: number | null };
 type OverlaySeries = ISeriesApi<'Line'>;
 
 function chartCandle(candle: MarketCandleDto): ExactChartCandle {
@@ -43,6 +50,7 @@ function chartCandle(candle: MarketCandleDto): ExactChartCandle {
     high: Number(candle.high),
     low: Number(candle.low),
     close: Number(candle.close),
+    volume: candle.volume === null ? null : Number(candle.volume),
   };
 }
 
@@ -87,6 +95,19 @@ function bollingerBands(candles: ExactChartCandle[], period: number) {
     lower.push({ time: candles[index].time, value: mean - deviation * 2 });
   }
   return { middle, upper, lower };
+}
+
+function volumeWeightedAveragePrice(candles: ExactChartCandle[]): LineData<UTCTimestamp>[] {
+  let weighted = 0;
+  let volume = 0;
+  const points: LineData<UTCTimestamp>[] = [];
+  for (const candle of candles) {
+    if (candle.volume === null || candle.volume <= 0) continue;
+    weighted += ((candle.high + candle.low + candle.close) / 3) * candle.volume;
+    volume += candle.volume;
+    points.push({ time: candle.time, value: weighted / volume });
+  }
+  return points;
 }
 
 function relativeStrengthIndex(
@@ -144,12 +165,14 @@ export function MarketChart({
   chartType,
   indicators,
   resetToken,
+  position,
 }: {
   symbol: MarketSymbolDto;
   interval: CandleIntervalDto;
   chartType: ChartType;
   indicators: IndicatorPreferences;
   resetToken: number;
+  position: PositionDto | null;
 }) {
   const container = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
@@ -162,11 +185,13 @@ export function MarketChart({
     signal: OverlaySeries;
     histogram: ISeriesApi<'Histogram'>;
   } | null>(null);
+  const volumeSeries = useRef<ISeriesApi<'Histogram'> | null>(null);
+  const positionLines = useRef<IPriceLine[]>([]);
   const [crosshair, setCrosshair] = useState<ExactChartCandle | null>(null);
   const indicatorKey = useMemo(() => JSON.stringify(indicators), [indicators]);
   const candles = useQuery({
     queryKey: queryKeys.candles(symbol, interval),
-    queryFn: () => api.candles(symbol, interval),
+    queryFn: ({ signal }) => api.candles(symbol, interval, 240, signal),
   });
 
   const updateIndicators = () => {
@@ -175,6 +200,8 @@ export function MarketChart({
       overlaySeries.current.sma?.setData(simpleMovingAverage(data, indicators.SMA.period));
     if (indicators.EMA.enabled)
       overlaySeries.current.ema?.setData(exponentialMovingAverage(data, indicators.EMA.period));
+    if (indicators.VWAP.enabled)
+      overlaySeries.current.vwap?.setData(volumeWeightedAveragePrice(data));
     if (indicators.BOLLINGER.enabled) {
       const bands = bollingerBands(data, indicators.BOLLINGER.period);
       overlaySeries.current.bollingerMiddle?.setData(bands.middle);
@@ -189,6 +216,21 @@ export function MarketChart({
       macdSeries.current?.signal.setData(values.signal);
       macdSeries.current?.histogram.setData(values.histogram);
     }
+    if (indicators.VOLUME.enabled)
+      volumeSeries.current?.setData(
+        data.flatMap((candle) =>
+          candle.volume === null
+            ? []
+            : [
+                {
+                  time: candle.time,
+                  value: candle.volume,
+                  color:
+                    candle.close >= candle.open ? 'rgba(79,214,161,.32)' : 'rgba(255,107,112,.28)',
+                },
+              ],
+        ),
+      );
   };
 
   useEffect(() => {
@@ -238,6 +280,7 @@ export function MarketChart({
     };
     if (indicators.SMA.enabled) addOverlay('sma', '#7db4ff');
     if (indicators.EMA.enabled) addOverlay('ema', '#f0b95d', 2);
+    if (indicators.VWAP.enabled) addOverlay('vwap', '#d8ff4f', 2);
     if (indicators.BOLLINGER.enabled) {
       addOverlay('bollingerMiddle', 'rgba(177,189,201,.55)');
       addOverlay('bollingerUpper', '#9d83ff');
@@ -273,6 +316,15 @@ export function MarketChart({
         }),
       };
     }
+    if (indicators.VOLUME.enabled) {
+      const pane = apiChart.addPane();
+      pane.setStretchFactor(0.22);
+      volumeSeries.current = pane.addSeries(HistogramSeries, {
+        priceLineVisible: false,
+        lastValueVisible: false,
+        priceFormat: { type: 'volume' },
+      });
+    }
     apiChart.panes()[0]?.setStretchFactor(1);
     const crosshairHandler = (parameter: { seriesData: Map<unknown, unknown> }) => {
       const point = parameter.seriesData.get(primary) as
@@ -289,8 +341,55 @@ export function MarketChart({
       overlaySeries.current = {};
       rsiSeries.current = null;
       macdSeries.current = null;
+      volumeSeries.current = null;
+      positionLines.current = [];
     };
   }, [chartType, indicatorKey]);
+
+  useEffect(() => {
+    const series = mainSeries.current;
+    if (!series) return;
+    for (const line of positionLines.current) series.removePriceLine(line);
+    positionLines.current = [];
+    if (!position || position.quantity === '0.00000000') return;
+
+    const addPositionLine = (
+      value: string | null,
+      title: string,
+      color: string,
+      lineStyle: LineStyle,
+      lineWidth: 1 | 2,
+    ) => {
+      const price = Number(value);
+      if (!Number.isFinite(price) || price <= 0) return;
+      positionLines.current.push(
+        series.createPriceLine({
+          price,
+          color,
+          lineWidth,
+          lineStyle,
+          axisLabelVisible: true,
+          title,
+        }),
+      );
+    };
+
+    addPositionLine(
+      position.averageEntryPrice,
+      'AVG ENTRY',
+      position.side === 'LONG' ? '#4d9b3b' : '#c4575d',
+      LineStyle.Dashed,
+      2,
+    );
+    addPositionLine(position.takeProfitPrice, 'TAKE PROFIT', '#4fd6a1', LineStyle.Dotted, 1);
+    addPositionLine(position.stopLossPrice, 'STOP LOSS', '#ff6b70', LineStyle.Dotted, 1);
+
+    return () => {
+      if (chart.current && mainSeries.current === series)
+        for (const line of positionLines.current) series.removePriceLine(line);
+      positionLines.current = [];
+    };
+  }, [position, chartType, indicatorKey]);
 
   useEffect(() => {
     if (!mainSeries.current || !candles.data) return;
@@ -307,22 +406,41 @@ export function MarketChart({
 
   useEffect(() => {
     return realtimeClient.subscribe(`market:${symbol}`, (event) => {
-      if (event.type !== 'market.price' || event.symbol !== symbol || !mainSeries.current) return;
-      const seconds = Math.floor(new Date(event.marketTimestamp).getTime() / 1_000);
-      const bucket = Math.floor(seconds / intervalSeconds[interval]) * intervalSeconds[interval];
-      const price = Number(event.price);
+      if (event.type !== 'market.candle' && event.type !== 'market.price') return;
+      if (event.symbol !== symbol || !mainSeries.current) return;
+      let next: ExactChartCandle;
+      if (event.type === 'market.candle') {
+        if (event.interval !== interval) return;
+        next = chartCandle(event.candle);
+      } else if (event.type === 'market.price') {
+        const seconds = Math.floor(new Date(event.marketTimestamp).getTime() / 1_000);
+        const bucket = Math.floor(seconds / intervalSeconds[interval]) * intervalSeconds[interval];
+        const price = Number(event.price);
+        const current = candleState.current.at(-1);
+        next =
+          current && current.time === bucket
+            ? {
+                ...current,
+                high: Math.max(current.high, price),
+                low: Math.min(current.low, price),
+                close: price,
+              }
+            : {
+                time: bucket as UTCTimestamp,
+                open: price,
+                high: price,
+                low: price,
+                close: price,
+                volume: null,
+              };
+      } else return;
       const current = candleState.current.at(-1);
-      const next: ExactChartCandle =
-        current && current.time === bucket
-          ? {
-              ...current,
-              high: Math.max(current.high, price),
-              low: Math.min(current.low, price),
-              close: price,
-            }
-          : { time: bucket as UTCTimestamp, open: price, high: price, low: price, close: price };
+      if (current && next.time < current.time) return;
       if (current?.time === next.time) candleState.current[candleState.current.length - 1] = next;
-      else candleState.current.push(next);
+      else {
+        candleState.current.push(next);
+        if (candleState.current.length > 500) candleState.current.shift();
+      }
       if (chartType === 'CANDLES') (mainSeries.current as ISeriesApi<'Candlestick'>).update(next);
       else
         (mainSeries.current as ISeriesApi<'Line'>).update({ time: next.time, value: next.close });

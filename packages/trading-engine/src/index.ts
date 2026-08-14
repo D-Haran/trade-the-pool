@@ -25,6 +25,7 @@ export * from './economics.js';
 export * from './lifecycle.js';
 export * from './service.js';
 export * from './professional-service.js';
+export * from './settlement.js';
 
 export type EntryEligibility = {
   status: TournamentStatus;

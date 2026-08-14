@@ -15,5 +15,14 @@ export default tseslint.config(
     },
   },
   prettier,
-  { ignores: ['**/dist/**', '**/.next/**', '**/next-env.d.ts', 'node_modules/**'] },
+  {
+    ignores: [
+      '**/dist/**',
+      '**/.next/**',
+      '**/next-env.d.ts',
+      '**/playwright-report/**',
+      '**/test-results/**',
+      'node_modules/**',
+    ],
+  },
 );

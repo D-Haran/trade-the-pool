@@ -1,5 +1,6 @@
 import { expect, request, test, type BrowserContext, type Page } from '@playwright/test';
 import postgres from 'postgres';
+import { createClient } from 'redis';
 import { databaseUrl } from './database';
 import { E2E } from './fixtures';
 
@@ -25,11 +26,36 @@ test.describe.serial('authoritative trading journey', () => {
 
   test('development login persists and logout works', async () => {
     await page.goto('/login');
-    await expect(page.getByText('Development only')).toBeVisible();
+    await expect(page.getByText('Local development access')).toBeVisible();
     await page.getByRole('button', { name: /E2E Trader/ }).click();
     await expect(page).toHaveURL(/\/dashboard$/);
     await page.reload();
     await expect(page.getByText('E2E Trader')).toBeVisible();
+    const sessionCookie = (await context.cookies(apiUrl)).find(
+      (candidate) => candidate.name === 'ttp_session',
+    );
+    expect(sessionCookie).toMatchObject({
+      name: 'ttp_session',
+      httpOnly: true,
+      secure: false,
+      sameSite: 'Lax',
+      path: '/',
+    });
+
+    await page.route('**/v1/auth/me', (route) =>
+      route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { code: 'INTERNAL_ERROR', message: 'temporary' } }),
+      }),
+    );
+    await page.reload();
+    await expect(page).toHaveURL(/\/dashboard$/);
+    await expect(page.getByText('Session check unavailable').first()).toBeVisible();
+    await page.unroute('**/v1/auth/me');
+    await page.getByRole('button', { name: 'Retry', exact: true }).click();
+    await expect(page.getByText('E2E Trader')).toBeVisible();
+
     await page.getByRole('button', { name: 'Sign out' }).click();
     await expect(page).toHaveURL(/\/$/);
     await page.goto('/login');
@@ -121,7 +147,7 @@ test.describe.serial('authoritative trading journey', () => {
     await page.getByRole('button', { name: /Indicators/ }).click();
     await page.getByLabel('SMA period').fill('25');
     await page.getByText('RSI', { exact: true }).click();
-    await expect(page.getByText(/VWAP and Volume are hidden/)).toBeVisible();
+    await expect(page.getByText(/VWAP and Volume use exchange-reported/)).toBeVisible();
     await page.getByRole('button', { name: 'Close indicators' }).click();
 
     await page.getByRole('button', { name: /SHORT S/ }).click();
@@ -169,6 +195,21 @@ test.describe.serial('authoritative trading journey', () => {
       .selectOption(firstEntryId);
     await expect(page.locator('.terminal-account-strip')).toContainText('$10,000.00');
     await expect(page.locator('.tournament-metrics')).toContainText('$55.00');
+  });
+
+  test('keeps PostgreSQL account state across logout, login, and navigation', async () => {
+    await page.getByRole('button', { name: 'Sign out' }).click();
+    await page.goto('/login?returnTo=%2Fdashboard');
+    await page.getByRole('button', { name: /E2E Trader/ }).click();
+    await expect(page).toHaveURL(/\/dashboard$/);
+    await expect(page.getByText('Entry #1').first()).toBeVisible();
+    await expect(page.getByText('Entry #2').first()).toBeVisible();
+    await page.reload();
+    await expect(page.getByText('Entry #1').first()).toBeVisible();
+    await page.goto(`/tournaments/${E2E.slug}/trade/${firstEntryId}`);
+    await page.getByRole('button', { name: 'Positions', exact: true }).click();
+    await expect(page.locator('.terminal-table--positions')).toContainText('ETH/USD');
+    await expect(page.locator('.terminal-table--positions')).toContainText('SOL/USD');
   });
 
   test('enforces scheduled trading start and independent entry/trading close boundaries', async () => {
@@ -229,7 +270,10 @@ test.describe.serial('authoritative trading journey', () => {
       data: { entryId: firstEntryId, symbol: 'BTC-USD', side: 'BUY', notional: '1.00' },
     });
     expect(response.status()).toBe(409);
-    await sql`UPDATE tournaments SET entry_closes_at = now() + interval '1 day', trading_closes_at = now() + interval '2 days' WHERE id = ${E2E.tournamentId}`;
+    await sql.begin(async (transaction) => {
+      await transaction`UPDATE tournaments SET status = 'TRADING_ACTIVE', entry_closes_at = now() + interval '1 day', trading_closes_at = now() + interval '2 days' WHERE id = ${E2E.tournamentId}`;
+      await transaction`DELETE FROM tournament_settlement_marks WHERE tournament_id = ${E2E.tournamentId}`;
+    });
     await sql.end();
   });
 
@@ -244,13 +288,29 @@ test.describe.serial('authoritative trading journey', () => {
       }),
     ]);
     await page.reload();
-    await expect(page.getByText('LIVE', { exact: true })).toBeVisible();
+    await expect(page.locator('.market-freshness')).toContainText('DEV DATA');
     await context.setOffline(true);
     await page.evaluate(() => window.dispatchEvent(new Event('offline')));
     await expect(page.getByText(/Realtime connection degraded|reconnect/i).first()).toBeVisible();
     await context.setOffline(false);
     await page.evaluate(() => window.dispatchEvent(new Event('online')));
-    await expect(page.getByText('LIVE', { exact: true })).toBeVisible({ timeout: 20_000 });
+    await expect(page.locator('.market-freshness')).toContainText('DEV DATA', {
+      timeout: 20_000,
+    });
+  });
+
+  test('isolates rapid symbol switches from slow prior-market history', async () => {
+    await page.route('**/v1/markets/ETH-USD/candles**', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      await route.continue().catch(() => undefined);
+    });
+    await selectMarket('ETH/USD');
+    await selectMarket('SOL/USD');
+    await selectMarket('BTC/USD');
+    await expect(page.locator('.market-chart')).toHaveAttribute('aria-label', /BTC\/USD .* chart/);
+    await expect(page.locator('.market-depth-panel')).toContainText('Market depth · Deterministic');
+    await expect(page.locator('.market-depth-panel')).toContainText('SIMULATED');
+    await page.unrouteAll({ behavior: 'wait' });
   });
 
   test('preserves terminal hierarchy without page overflow across target viewports', async () => {
@@ -310,8 +370,15 @@ test.describe.serial('authoritative trading journey', () => {
         data: { symbol: 'SOL-USD', price: '200.00' },
       }),
     ]);
+    const redis = createClient({ url: process.env.REDIS_URL ?? 'redis://127.0.0.1:6379' });
+    await redis.connect();
+    const websocketRateKeys = await redis.keys('rate:ws-*');
+    if (websocketRateKeys.length) await redis.del(websocketRateKeys);
+    await redis.quit();
     await page.goto(`/tournaments/${E2E.slug}/trade/${firstEntryId}`);
-    await expect(page.getByText('LIVE', { exact: true })).toBeVisible({ timeout: 20_000 });
+    await expect(page.locator('.market-freshness')).toContainText('DEV DATA', {
+      timeout: 20_000,
+    });
     const terminalMask = [
       page.locator('.market-chart'),
       page.locator('.terminal-close-time'),

@@ -1,8 +1,9 @@
 # Trade the Pool
 
 Production-oriented competitive paper-trading platform foundation with a deterministic trading
-engine, authenticated V1 API, exact leaderboard projections, and realtime infrastructure. Solana,
-wallets, and real-money functionality remain intentionally out of scope.
+engine, authenticated V1 API, exact leaderboard projections, realtime infrastructure, and Solana
+wallet identity. Balance reads, custody, deposits, withdrawals, and real-money functionality remain
+intentionally out of scope.
 
 ## Domain foundation
 
@@ -38,6 +39,9 @@ The deterministic economics simulator, population assumptions, arrival models, p
 fairness diagnostics are documented in [`docs/simulator.md`](docs/simulator.md).
 The first 10,000-run baseline and its imbalance findings are in
 [`docs/simulation-baseline.md`](docs/simulation-baseline.md).
+The live/fake provider boundary, Kraken/Coinbase/Pyth responsibilities, freshness policy,
+normalized fanout, and server-authoritative settlement flow are documented in
+[`docs/market-data.md`](docs/market-data.md).
 
 ## Prerequisites
 
@@ -63,6 +67,12 @@ pnpm --filter @trade-the-pool/api dev
 
 The web app runs on `http://localhost:3000`; the API health endpoint is `http://localhost:4000/health`.
 
+Development and CI use `MARKET_DATA_MODE=fake` by default. To use genuine public BTC/USD,
+ETH/USD, and SOL/USD data locally, set `MARKET_DATA_MODE=live`, provide a server-side
+`PYTH_API_KEY` plus all three current Pyth feed IDs, then start the same API/web processes. Live
+configuration is validated at startup and never falls back to deterministic prices. See
+[`docs/market-data.md`](docs/market-data.md) and [`.env.example`](.env.example).
+
 ## Validation
 
 ```bash
@@ -78,5 +88,10 @@ The API validates required runtime configuration with Zod at startup. PostgreSQL
 database boundary; Redis stores expiring sessions, rate-limit counters, and recoverable realtime
 leaderboard projections only. See [`docs/api-realtime.md`](docs/api-realtime.md) for routes,
 security, recovery, and the frontend snapshot/subscription contract.
+Session lifetime, Redis/API restart behavior, cookies, CSRF, CORS, reverse-proxy topology, stable
+PostgreSQL identity, and wallet/session behavior are documented in
+[`docs/authentication.md`](docs/authentication.md).
+The Solana wallet schema, SIWS proof protocol, linking policy, threat model, and next-phase boundary
+are documented in [`docs/wallet-authentication.md`](docs/wallet-authentication.md).
 The V1 routes, client state model, realtime lifecycle, chart, trading safeguards, and browser test
 coverage are documented in [`docs/frontend.md`](docs/frontend.md).

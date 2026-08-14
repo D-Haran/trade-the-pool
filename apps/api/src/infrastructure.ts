@@ -3,8 +3,10 @@ import { ApiError } from './errors.js';
 
 export interface KeyValueStore {
   get(key: string): Promise<string | null>;
+  getDelete(key: string): Promise<string | null>;
   set(key: string, value: string, ttlSeconds?: number): Promise<void>;
   delete(key: string): Promise<void>;
+  ttl(key: string): Promise<number>;
   increment(key: string, ttlSeconds: number): Promise<number>;
   ping(): Promise<void>;
   close(): Promise<void>;
@@ -26,6 +28,10 @@ export class RedisKeyValueStore implements KeyValueStore {
     return this.client.get(key);
   }
 
+  async getDelete(key: string): Promise<string | null> {
+    return this.client.getDel(key);
+  }
+
   async set(key: string, value: string, ttlSeconds?: number): Promise<void> {
     if (ttlSeconds) await this.client.set(key, value, { EX: ttlSeconds });
     else await this.client.set(key, value);
@@ -33,6 +39,10 @@ export class RedisKeyValueStore implements KeyValueStore {
 
   async delete(key: string): Promise<void> {
     await this.client.del(key);
+  }
+
+  async ttl(key: string): Promise<number> {
+    return this.client.ttl(key);
   }
 
   async increment(key: string, ttlSeconds: number): Promise<number> {
@@ -65,6 +75,12 @@ export class MemoryKeyValueStore implements KeyValueStore {
     return record.value;
   }
 
+  async getDelete(key: string): Promise<string | null> {
+    const value = await this.get(key);
+    if (value !== null) this.values.delete(key);
+    return value;
+  }
+
   async set(key: string, value: string, ttlSeconds?: number): Promise<void> {
     this.values.set(key, {
       value,
@@ -74,6 +90,18 @@ export class MemoryKeyValueStore implements KeyValueStore {
 
   async delete(key: string): Promise<void> {
     this.values.delete(key);
+  }
+
+  async ttl(key: string): Promise<number> {
+    const record = this.values.get(key);
+    if (!record) return -2;
+    if (record.expiresAt === null) return -1;
+    const remaining = Math.ceil((record.expiresAt - Date.now()) / 1000);
+    if (remaining <= 0) {
+      this.values.delete(key);
+      return -2;
+    }
+    return remaining;
   }
 
   async increment(key: string, ttlSeconds: number): Promise<number> {
@@ -90,6 +118,10 @@ export type RateLimitPolicy = { limit: number; windowSeconds: number };
 
 export const RATE_LIMITS = {
   auth: { limit: 10, windowSeconds: 60 },
+  walletChallenge: { limit: 10, windowSeconds: 60 },
+  walletVerification: { limit: 10, windowSeconds: 60 },
+  walletLink: { limit: 5, windowSeconds: 60 },
+  walletInvalidSignature: { limit: 5, windowSeconds: 300 },
   entryCreation: { limit: 10, windowSeconds: 60 },
   orderSubmission: { limit: 120, windowSeconds: 60 },
   websocketConnections: { limit: 20, windowSeconds: 60 },

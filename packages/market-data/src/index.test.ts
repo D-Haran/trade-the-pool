@@ -66,5 +66,15 @@ describe('DeterministicMarketPriceSource', () => {
     expect(statistics.volume24h).toBeNull();
     expect(source.getCandles('ETH-USD', '4h', 20).length).toBeGreaterThan(1);
     expect(source.getCandles('ETH-USD', '1d', 20).length).toBeGreaterThan(0);
+    expect(source.getHealth()).toMatchObject({
+      mode: 'fake',
+      components: {
+        currentPrice: 'deterministic-memory-v1',
+        historicalCandles: 'deterministic-memory-v1',
+        orderBook: 'deterministic-memory-v1',
+        recentTrades: 'deterministic-memory-v1',
+        authoritativeMark: 'deterministic-memory-v1',
+      },
+    });
   });
 });

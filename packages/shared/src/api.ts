@@ -110,8 +110,64 @@ export const marketPriceEventSchema = z.object({
   type: z.literal('market.price'),
   symbol: marketSymbolSchema,
   price: z.string(),
+  markPrice: z.string().nullable(),
   marketTimestamp: z.string().datetime(),
+  markTimestamp: z.string().datetime().nullable(),
   source: z.string(),
+  markSource: z.string().nullable(),
+  status: z.enum(['LIVE', 'DELAYED', 'STALE', 'RECONNECTING', 'UNAVAILABLE', 'DEGRADED']),
+  exchangeStatus: z.enum(['LIVE', 'DELAYED', 'STALE', 'RECONNECTING', 'UNAVAILABLE', 'DEGRADED']),
+});
+
+const orderBookLevelEventSchema = z.object({
+  price: z.string(),
+  quantity: z.string(),
+  total: z.string(),
+});
+export const marketBookEventSchema = z.object({
+  type: z.literal('market.book'),
+  symbol: marketSymbolSchema,
+  venue: z.string(),
+  status: z.enum(['LIVE', 'DELAYED', 'STALE', 'RECONNECTING', 'UNAVAILABLE', 'DEGRADED']),
+  timestamp: z.string().datetime().nullable(),
+  bids: z.array(orderBookLevelEventSchema).max(50),
+  asks: z.array(orderBookLevelEventSchema).max(50),
+  spread: z.string().nullable(),
+  spreadBasisPoints: z.string().nullable(),
+});
+export const marketTradesEventSchema = z.object({
+  type: z.literal('market.trades'),
+  symbol: marketSymbolSchema,
+  trades: z
+    .array(
+      z.object({
+        id: z.string(),
+        price: z.string(),
+        quantity: z.string(),
+        side: z.enum(['BUY', 'SELL']).nullable(),
+        timestamp: z.string().datetime(),
+        venue: z.string(),
+      }),
+    )
+    .max(100),
+});
+export const marketCandleEventSchema = z.object({
+  type: z.literal('market.candle'),
+  symbol: marketSymbolSchema,
+  interval: z.enum(['1m', '5m', '15m', '1h', '4h', '1d']),
+  candle: z.object({
+    timestamp: z.string().datetime(),
+    open: z.string(),
+    high: z.string(),
+    low: z.string(),
+    close: z.string(),
+    volume: z.string().nullable(),
+  }),
+});
+export const marketStatusEventSchema = z.object({
+  type: z.literal('market.status'),
+  symbol: marketSymbolSchema,
+  status: z.enum(['LIVE', 'DELAYED', 'STALE', 'RECONNECTING', 'UNAVAILABLE', 'DEGRADED']),
 });
 
 export const tournamentPrizePoolUpdatedEventSchema = z.object({
@@ -147,6 +203,10 @@ export const leaderboardUpdatedEventSchema = z.object({
 
 export const realtimeEventSchema = z.discriminatedUnion('type', [
   marketPriceEventSchema,
+  marketBookEventSchema,
+  marketTradesEventSchema,
+  marketCandleEventSchema,
+  marketStatusEventSchema,
   tournamentPrizePoolUpdatedEventSchema,
   tournamentStatusChangedEventSchema,
   entryAccountUpdatedEventSchema,
@@ -164,6 +224,42 @@ export type TournamentStatusDto = z.infer<typeof tournamentStatusSchema>;
 export type ApiEnvelope<T> = { data: T };
 
 export type UserDto = { id: string; displayName: string };
+
+export type SolanaClusterDto = 'mainnet-beta' | 'devnet' | 'testnet' | 'localnet';
+export type WalletChallengePurposeDto = 'LOGIN' | 'LINK';
+
+export type SolanaSignInInputDto = {
+  domain: string;
+  address: string;
+  statement: string;
+  uri: string;
+  version: '1';
+  chainId: `solana:${'mainnet' | 'devnet' | 'testnet' | 'localnet'}`;
+  nonce: string;
+  issuedAt: string;
+  expirationTime: string;
+  requestId: string;
+};
+
+export type WalletChallengeDto = {
+  challengeId: string;
+  purpose: WalletChallengePurposeDto;
+  chain: 'SOLANA';
+  network: SolanaClusterDto;
+  input: SolanaSignInInputDto;
+  message: string;
+};
+
+export type UserWalletDto = {
+  id: string;
+  address: string;
+  chain: 'SOLANA';
+  network: SolanaClusterDto;
+  isPrimary: boolean;
+  verifiedAt: string;
+  createdAt: string;
+  updatedAt: string;
+};
 
 export type TournamentFeeTierDto = {
   ordinal: number;
@@ -337,14 +433,31 @@ export type LeaderboardPageDto = Page<LeaderboardRowDto> & { myRanks: Leaderboar
 
 export type MarketSnapshotDto = {
   symbol: MarketSymbolDto;
+  dataMode: 'fake' | 'live';
   price: string;
+  markPrice: string | null;
   marketTimestamp: string;
+  markTimestamp: string | null;
   source: string;
-  status: 'LIVE' | 'DELAYED' | 'STALE' | 'UNAVAILABLE';
+  markSource: string | null;
+  status: 'LIVE' | 'DELAYED' | 'STALE' | 'RECONNECTING' | 'UNAVAILABLE' | 'DEGRADED';
+  exchangeStatus: 'LIVE' | 'DELAYED' | 'STALE' | 'RECONNECTING' | 'UNAVAILABLE' | 'DEGRADED';
+  availability: 'ACTIVE' | 'DEGRADED' | 'PAUSED' | 'DISABLED';
+  deviationBasisPoints: string | null;
   change24hBasisPoints: string | null;
   high24h: string | null;
   low24h: string | null;
   volume24h: string | null;
+  provenance: {
+    currentPrice: string;
+    statistics24h: string;
+    historicalCandles: string;
+    realtimeCandles: string;
+    orderBook: string;
+    recentTrades: string;
+    authoritativeMark: string;
+    comparisonPrice: string;
+  };
   metadata: {
     assetClass: 'CRYPTO';
     baseCurrency: 'BTC' | 'ETH' | 'SOL';
@@ -363,6 +476,29 @@ export type MarketCandleDto = {
   high: string;
   low: string;
   close: string;
+  volume: string | null;
+};
+
+export type MarketOrderBookLevelDto = { price: string; quantity: string; total: string };
+export type MarketOrderBookDto = {
+  symbol: MarketSymbolDto;
+  venue: string;
+  status: MarketSnapshotDto['status'];
+  timestamp: string | null;
+  bids: MarketOrderBookLevelDto[];
+  asks: MarketOrderBookLevelDto[];
+  spread: string | null;
+  spreadBasisPoints: string | null;
+};
+
+export type MarketTradeDto = {
+  id: string;
+  symbol: MarketSymbolDto;
+  price: string;
+  quantity: string;
+  side: 'BUY' | 'SELL' | null;
+  timestamp: string;
+  venue: string;
 };
 
 export type FillHistoryDto = NonNullable<OrderHistoryDto['fill']> & {

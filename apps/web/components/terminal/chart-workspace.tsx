@@ -1,6 +1,6 @@
 'use client';
 
-import type { CandleIntervalDto, MarketSymbolDto } from '@trade-the-pool/shared';
+import type { CandleIntervalDto, MarketSymbolDto, PositionDto } from '@trade-the-pool/shared';
 import {
   BarChart3,
   CandlestickChart,
@@ -23,9 +23,11 @@ const intervals: CandleIntervalDto[] = ['1m', '5m', '15m', '1h', '4h', '1d'];
 const indicatorLabels: Record<IndicatorKey, { label: string; description: string }> = {
   SMA: { label: 'SMA', description: 'Simple moving average' },
   EMA: { label: 'EMA', description: 'Exponential moving average' },
+  VWAP: { label: 'VWAP', description: 'Volume-weighted average price' },
   BOLLINGER: { label: 'Bollinger Bands', description: '20-period, 2 deviations' },
   RSI: { label: 'RSI', description: 'Relative strength index' },
   MACD: { label: 'MACD', description: '12 / 26 / 9 momentum' },
+  VOLUME: { label: 'Volume', description: 'Exchange traded base volume' },
 };
 
 function IndicatorManager({
@@ -45,7 +47,7 @@ function IndicatorManager({
       <div className="indicator-popover__head">
         <div>
           <strong>Indicators</strong>
-          <span>Calculated locally from authoritative candles</span>
+          <span>Calculated locally from normalized exchange candles</span>
         </div>
         <button onClick={onClose} aria-label="Close indicators">
           <X aria-hidden="true" />
@@ -71,7 +73,7 @@ function IndicatorManager({
                 <small>{indicatorLabels[key].description}</small>
               </span>
             </label>
-            {key !== 'MACD' ? (
+            {!['MACD', 'VWAP', 'VOLUME'].includes(key) ? (
               <input
                 type="number"
                 min={2}
@@ -85,13 +87,14 @@ function IndicatorManager({
                 aria-label={`${indicatorLabels[key].label} period`}
               />
             ) : (
-              <span className="indicator-fixed">12 · 26 · 9</span>
+              <span className="indicator-fixed">{key === 'MACD' ? '12 · 26 · 9' : 'SOURCE'}</span>
             )}
           </div>
         ))}
       </div>
       <div className="indicator-unavailable">
-        VWAP and Volume are hidden until the authoritative feed supplies real volume.
+        VWAP and Volume use exchange-reported candle volume and remain blank when volume is
+        unavailable.
       </div>
       <button className="indicator-reset" onClick={resetIndicators}>
         Reset defaults
@@ -100,7 +103,13 @@ function IndicatorManager({
   );
 }
 
-export function ChartWorkspace({ symbol }: { symbol: MarketSymbolDto }) {
+export function ChartWorkspace({
+  symbol,
+  position,
+}: {
+  symbol: MarketSymbolDto;
+  position: PositionDto | null;
+}) {
   const { interval, setInterval, chartType, setChartType, indicators } = useTerminalStore();
   const [indicatorOpen, setIndicatorOpen] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
@@ -170,6 +179,7 @@ export function ChartWorkspace({ symbol }: { symbol: MarketSymbolDto }) {
           chartType={chartType}
           indicators={indicators}
           resetToken={resetToken}
+          position={position}
         />
       </ChartBoundary>
     </section>

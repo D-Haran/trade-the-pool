@@ -8,9 +8,11 @@ import {
   signedMoneyToString,
 } from '@trade-the-pool/shared';
 import { DEFAULT_EXECUTION_CONFIG } from './config.js';
+import { DomainError } from './errors.js';
 import {
   accountEquity,
   assertFreshSnapshot,
+  assertExecutionEligibleSnapshot,
   assertTradable,
   buyPosition,
   calculateFee,
@@ -147,5 +149,21 @@ describe('server-authoritative tradability', () => {
     expect(() => assertFreshSnapshot(new Date(now.getTime() - 30_001), now, 30_000)).toThrow();
     expect(() => assertFreshSnapshot(new Date(now.getTime() + 1), now, 30_000)).toThrow();
     expect(() => assertFreshSnapshot(new Date('invalid'), now, 30_000)).toThrow();
+  });
+
+  it('fails closed when the central market service marks authority degraded', () => {
+    const snapshot = {
+      symbol: 'BTC-USD' as const,
+      price: parsePrice('100000'),
+      marketTimestamp: new Date(),
+      receivedAt: new Date(),
+      source: 'authoritative-mark',
+      status: 'DEGRADED' as const,
+      executionEligible: false,
+    };
+    expect(() => assertExecutionEligibleSnapshot(snapshot)).toThrow(DomainError);
+    expect(() =>
+      assertExecutionEligibleSnapshot({ ...snapshot, status: 'LIVE', executionEligible: true }),
+    ).not.toThrow();
   });
 });

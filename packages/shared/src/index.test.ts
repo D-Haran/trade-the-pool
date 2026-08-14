@@ -67,6 +67,13 @@ describe('environment security', () => {
     DATABASE_URL: 'postgresql://localhost/database',
     REDIS_URL: 'redis://localhost:6379',
   };
+  const liveMarketData = {
+    MARKET_DATA_MODE: 'live',
+    PYTH_API_KEY: 'test-key',
+    PYTH_FEED_ID_BTC_USD: 'aa'.repeat(32),
+    PYTH_FEED_ID_ETH_USD: 'bb'.repeat(32),
+    PYTH_FEED_ID_SOL_USD: 'cc'.repeat(32),
+  };
 
   it('rejects development authentication in production', () => {
     expect(() =>
@@ -78,5 +85,72 @@ describe('environment security', () => {
     expect(parseEnvironment({ ...required, DEV_AUTH_ENABLED: 'false' }).DEV_AUTH_ENABLED).toBe(
       false,
     );
+  });
+
+  it('defaults to a fixed seven-day session and does not trust proxies', () => {
+    const environment = parseEnvironment(required);
+    expect(environment.SESSION_TTL_SECONDS).toBe(604_800);
+    expect(environment.TRUST_PROXY).toBe(false);
+    expect(environment.SOLANA_CLUSTER).toBe('devnet');
+    expect(environment.WALLET_CHALLENGE_TTL_SECONDS).toBe(300);
+  });
+
+  it('binds wallet authentication to one exact allowlisted origin and domain', () => {
+    expect(() =>
+      parseEnvironment({
+        ...required,
+        CORS_ALLOWED_ORIGINS: 'https://app.example.com',
+        WALLET_AUTH_ORIGIN: 'https://app.example.com',
+        WALLET_AUTH_DOMAIN: 'other.example.com',
+      }),
+    ).toThrow('Wallet auth origin must be an allowed exact origin');
+    expect(
+      parseEnvironment({
+        ...required,
+        ...liveMarketData,
+        NODE_ENV: 'production',
+        CORS_ALLOWED_ORIGINS: 'https://app.example.com',
+        WALLET_AUTH_ORIGIN: 'https://app.example.com',
+        WALLET_AUTH_DOMAIN: 'app.example.com',
+      }).WALLET_AUTH_DOMAIN,
+    ).toBe('app.example.com');
+  });
+
+  it('rejects wildcard credentialed CORS and non-HTTPS production origins', () => {
+    expect(() => parseEnvironment({ ...required, CORS_ALLOWED_ORIGINS: '*' })).toThrow(
+      'Credentialed CORS requires one or more explicit origins',
+    );
+    expect(() =>
+      parseEnvironment({
+        ...required,
+        NODE_ENV: 'production',
+        CORS_ALLOWED_ORIGINS: 'http://app.example.com',
+      }),
+    ).toThrow('Invalid production HTTPS origin');
+  });
+
+  it('treats blank optional live credentials as unset in fake mode', () => {
+    const environment = parseEnvironment({
+      ...required,
+      MARKET_DATA_MODE: 'fake',
+      PYTH_API_KEY: '',
+      PYTH_FEED_ID_BTC_USD: '',
+      PYTH_FEED_ID_ETH_USD: '',
+      PYTH_FEED_ID_SOL_USD: '',
+    });
+    expect(environment.PYTH_API_KEY).toBeUndefined();
+    expect(environment.PYTH_FEED_ID_BTC_USD).toBeUndefined();
+  });
+
+  it('requires all Pyth credentials in live mode', () => {
+    expect(() =>
+      parseEnvironment({ ...required, MARKET_DATA_MODE: 'live', PYTH_API_KEY: '' }),
+    ).toThrow('PYTH_API_KEY is required when MARKET_DATA_MODE=live');
+  });
+
+  it('rejects fake market data in production', () => {
+    expect(() =>
+      parseEnvironment({ ...required, NODE_ENV: 'production', MARKET_DATA_MODE: 'fake' }),
+    ).toThrow('Production requires MARKET_DATA_MODE=live');
   });
 });

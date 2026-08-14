@@ -1,6 +1,7 @@
 import { relations, sql } from 'drizzle-orm';
 import {
   check,
+  boolean,
   integer,
   jsonb,
   numeric,
@@ -52,6 +53,13 @@ export const ledgerEntryType = pgEnum('ledger_entry_type', [
   'ADJUSTMENT',
   'FINAL_SETTLEMENT',
 ]);
+export const walletChain = pgEnum('wallet_chain', ['SOLANA']);
+export const walletNetwork = pgEnum('wallet_network', [
+  'mainnet-beta',
+  'devnet',
+  'testnet',
+  'localnet',
+]);
 
 const timestamps = {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -63,6 +71,32 @@ export const users = pgTable('users', {
   displayName: varchar('display_name', { length: 120 }).notNull(),
   ...timestamps,
 });
+
+export const userWallets = pgTable(
+  'user_wallets',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    address: varchar('address', { length: 44 }).notNull(),
+    chain: walletChain('chain').notNull().default('SOLANA'),
+    network: walletNetwork('network').notNull(),
+    isPrimary: boolean('is_primary').notNull().default(false),
+    verifiedAt: timestamp('verified_at', { withTimezone: true }).notNull(),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex('user_wallets_address_idx').on(table.address),
+    uniqueIndex('user_wallets_one_primary_per_user_idx')
+      .on(table.userId)
+      .where(sql`${table.isPrimary} = true`),
+    check(
+      'user_wallets_solana_address_format',
+      sql`${table.address} ~ '^[1-9A-HJ-NP-Za-km-z]{32,44}$'`,
+    ),
+  ],
+);
 
 export const tournaments = pgTable(
   'tournaments',
@@ -363,9 +397,40 @@ export const accountLedgerEntries = pgTable(
   ],
 );
 
+export const tournamentSettlementMarks = pgTable(
+  'tournament_settlement_marks',
+  {
+    tournamentId: uuid('tournament_id')
+      .notNull()
+      .references(() => tournaments.id),
+    symbol: tradingSymbol('symbol').notNull(),
+    price: numeric('price', { precision: 28, scale: 8 }).notNull(),
+    confidence: numeric('confidence', { precision: 28, scale: 8 }),
+    source: varchar('source', { length: 64 }).notNull(),
+    marketTimestamp: timestamp('market_timestamp', { withTimezone: true }).notNull(),
+    lockedAt: timestamp('locked_at', { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.tournamentId, table.symbol] }),
+    check('tournament_settlement_marks_price_positive', sql`${table.price} > 0`),
+    check(
+      'tournament_settlement_marks_confidence_nonnegative',
+      sql`${table.confidence} IS NULL OR ${table.confidence} >= 0`,
+    ),
+  ],
+);
+
 export const tournamentRelations = relations(tournaments, ({ many }) => ({
   entries: many(tournamentEntries),
   feeTiers: many(tournamentEntryFeeTiers),
+  settlementMarks: many(tournamentSettlementMarks),
+}));
+export const userRelations = relations(users, ({ many }) => ({
+  entries: many(tournamentEntries),
+  wallets: many(userWallets),
+}));
+export const userWalletRelations = relations(userWallets, ({ one }) => ({
+  user: one(users, { fields: [userWallets.userId], references: [users.id] }),
 }));
 export const entryRelations = relations(tournamentEntries, ({ one }) => ({
   tournament: one(tournaments, {
@@ -377,11 +442,13 @@ export const entryRelations = relations(tournamentEntries, ({ one }) => ({
 
 export const schema = {
   users,
+  userWallets,
   tournaments,
   tournamentEntries,
   orders,
   fills,
   positions,
   accountLedgerEntries,
+  tournamentSettlementMarks,
   tournamentEntryFeeTiers,
 };

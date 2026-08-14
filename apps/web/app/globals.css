@@ -847,6 +847,235 @@ a {
   line-height: 1.5;
 }
 
+.wallet-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+.wallet-choice {
+  justify-content: flex-start;
+  min-height: 58px;
+  width: 100%;
+}
+.wallet-choice__mark,
+.connected-wallet__icon,
+.linked-wallet-row__icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+  color: var(--accent);
+}
+.wallet-choice__mark svg,
+.connected-wallet__icon svg,
+.linked-wallet-row__icon svg {
+  width: 16px;
+}
+.wallet-choice > span:last-child {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
+}
+.wallet-choice small,
+.connected-wallet small,
+.linked-wallet-row small {
+  color: var(--text-muted);
+  font-size: 0.64rem;
+  font-weight: 520;
+}
+.wallet-empty {
+  min-height: 126px;
+  display: grid;
+  place-items: center;
+  gap: 0.5rem;
+  padding: 1.2rem;
+  text-align: center;
+  border: 1px dashed var(--border-default);
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+}
+.wallet-empty svg {
+  width: 22px;
+}
+.wallet-empty strong {
+  color: var(--text-secondary);
+  font-size: 0.76rem;
+}
+.wallet-empty span,
+.wallet-proof-note,
+.wallet-separation-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.65rem;
+  line-height: 1.55;
+}
+.connected-wallet {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  min-height: 58px;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+}
+.connected-wallet > span:nth-child(2) {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.connected-wallet button {
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.connected-wallet button:hover {
+  color: var(--text-primary);
+}
+.connected-wallet button svg {
+  width: 16px;
+}
+.wallet-primary-action {
+  width: 100%;
+}
+.auth-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin: 0.65rem 0 0.15rem;
+  color: var(--text-muted);
+  font-size: 0.59rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.auth-divider::before,
+.auth-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border-subtle);
+}
+
+.wallet-account-page {
+  padding-block: 4.5rem 7rem;
+}
+.wallet-account-header {
+  max-width: 660px;
+  margin-bottom: 2.5rem;
+}
+.wallet-account-header h1 {
+  margin: 1rem 0 0.8rem;
+  font-size: clamp(2.5rem, 5vw, 4.25rem);
+  line-height: 0.98;
+  letter-spacing: -0.06em;
+}
+.wallet-account-header > p {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.65;
+}
+.wallet-account-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.75fr) minmax(460px, 1.25fr);
+  gap: 1rem;
+  align-items: start;
+}
+.wallet-card {
+  padding: 1.25rem;
+  border: 1px solid var(--border-default);
+  background: var(--bg-raised);
+}
+.wallet-card__heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding-bottom: 1rem;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.wallet-card__heading small {
+  color: var(--text-muted);
+  font-size: 0.61rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+.wallet-card__heading h2 {
+  margin: 0.3rem 0 0;
+  font-size: 1.05rem;
+  letter-spacing: -0.025em;
+}
+.wallet-card__heading > svg {
+  width: 18px;
+  color: var(--text-muted);
+}
+.wallet-separation-note {
+  padding-top: 1rem;
+  margin-top: 1rem;
+  border-top: 1px solid var(--border-subtle);
+}
+.linked-wallet-list {
+  display: flex;
+  flex-direction: column;
+}
+.linked-wallet-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 72px;
+  padding: 0.7rem 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.linked-wallet-row:last-child {
+  border-bottom: 0;
+}
+.linked-wallet-row > div:nth-child(2) {
+  min-width: 0;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.linked-wallet-row strong {
+  font-size: 0.79rem;
+}
+.linked-wallet-row__actions {
+  display: flex;
+  gap: 0.25rem;
+}
+.linked-wallet-row__actions .button:last-child {
+  color: var(--negative);
+}
+
+@media (max-width: 900px) {
+  .wallet-account-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 620px) {
+  .wallet-account-page {
+    padding-block: 2.5rem 6rem;
+  }
+  .linked-wallet-row {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .linked-wallet-row__actions {
+    width: 100%;
+    padding-left: 2.9rem;
+  }
+}
+
 .detail-page {
   padding: 3.5rem 0 7rem;
 }
@@ -2672,7 +2901,8 @@ a {
   color: var(--positive);
 }
 .market-freshness--delayed,
-.market-freshness--reconnecting {
+.market-freshness--reconnecting,
+.market-freshness--degraded {
   color: var(--warning);
 }
 .market-freshness--stale,
@@ -2681,10 +2911,187 @@ a {
 }
 .professional-terminal-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 326px;
+  grid-template-columns: minmax(0, 1fr) 286px 326px;
   max-width: 1920px;
   min-height: 590px;
   margin-inline: auto;
+}
+.professional-terminal-grid.is-depth-collapsed {
+  grid-template-columns: minmax(0, 1fr) 38px 326px;
+}
+.market-depth-panel {
+  min-width: 0;
+  min-height: 590px;
+  max-height: 590px;
+  overflow: hidden;
+  background: #0b0f12;
+  border-right: 1px solid var(--terminal-line);
+  border-bottom: 1px solid var(--terminal-line);
+}
+.market-depth-panel.is-collapsed {
+  min-height: 590px;
+}
+.market-depth-content {
+  height: 100%;
+}
+.market-depth-panel.is-collapsed .market-depth-content {
+  display: none;
+}
+.market-depth-expand {
+  width: 100%;
+  height: 100%;
+  min-height: 590px;
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  gap: 0.7rem;
+  padding: 0.75rem 0;
+  color: var(--text-muted);
+  background: #0d1115;
+  border: 0;
+  cursor: pointer;
+}
+.market-depth-expand:hover,
+.market-depth-collapse:hover {
+  color: var(--text-primary);
+  background: #12181d;
+}
+.market-depth-expand svg,
+.market-depth-collapse svg {
+  width: 14px;
+  height: 14px;
+}
+.market-depth-expand span {
+  writing-mode: vertical-rl;
+  font: 720 0.5rem var(--font-mono);
+  letter-spacing: 0.09em;
+}
+.market-depth-tabs {
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: 1fr 1fr 34px;
+  border-bottom: 1px solid var(--terminal-line);
+}
+.market-depth-collapse {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-left: 1px solid var(--terminal-line) !important;
+}
+.market-depth-tabs button {
+  position: relative;
+  color: var(--text-muted);
+  background: transparent;
+  border: 0;
+  font-size: 0.53rem;
+  font-weight: 720;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+.market-depth-tabs button.is-active {
+  color: var(--text-primary);
+}
+.market-depth-tabs button.is-active::after {
+  content: '';
+  position: absolute;
+  height: 2px;
+  right: 1rem;
+  bottom: -1px;
+  left: 1rem;
+  background: var(--accent);
+}
+.market-depth-provenance {
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 0.55rem;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--terminal-line);
+  font-size: 0.48rem;
+}
+.market-depth-provenance b {
+  font: 700 0.45rem var(--font-mono);
+  letter-spacing: 0.06em;
+}
+.depth-book,
+.trade-tape {
+  min-height: 0;
+  overflow: hidden;
+}
+.depth-head,
+.depth-row,
+.trade-tape-row {
+  display: grid;
+  grid-template-columns: 1.15fr 0.85fr 0.85fr;
+  align-items: center;
+  column-gap: 0.35rem;
+  padding: 0 0.5rem;
+}
+.depth-head {
+  min-height: 27px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 0.44rem;
+  letter-spacing: 0.07em;
+}
+.depth-head span:not(:first-child),
+.depth-row span:not(:first-of-type),
+.trade-tape-row span:not(:first-child) {
+  text-align: right;
+}
+.depth-row,
+.trade-tape-row {
+  position: relative;
+  min-height: 19px;
+  color: var(--text-secondary);
+  font: 530 0.49rem var(--font-mono);
+}
+.depth-row > i {
+  position: absolute;
+  z-index: 0;
+  top: 1px;
+  right: 0;
+  bottom: 1px;
+  pointer-events: none;
+}
+.depth-side--asks .depth-row > i {
+  background: rgb(255 107 112 / 0.07);
+}
+.depth-side--bids .depth-row > i {
+  background: rgb(79 214 161 / 0.07);
+}
+.depth-row > span,
+.trade-tape-row > span {
+  position: relative;
+  z-index: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.depth-spread {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0 0.55rem;
+  border-block: 1px solid var(--terminal-line);
+}
+.depth-spread strong {
+  color: var(--text-primary);
+  font-size: 0.58rem;
+}
+.depth-spread span {
+  color: var(--text-muted);
+  font: 500 0.47rem var(--font-mono);
+}
+.market-depth-message {
+  margin: 0;
+  padding: 2rem 0.8rem;
+  color: var(--text-muted);
+  font-size: 0.55rem;
+  line-height: 1.5;
+  text-align: center;
 }
 .chart-workspace {
   position: relative;
@@ -3412,7 +3819,10 @@ kbd {
     grid-template-columns: 220px minmax(160px, auto) 1fr auto;
   }
   .professional-terminal-grid {
-    grid-template-columns: minmax(0, 1fr) 310px;
+    grid-template-columns: minmax(0, 1fr) 260px 310px;
+  }
+  .professional-terminal-grid.is-depth-collapsed {
+    grid-template-columns: minmax(0, 1fr) 38px 310px;
   }
   .performance-grid {
     grid-template-columns: repeat(4, 1fr);
@@ -3435,6 +3845,27 @@ kbd {
   }
   .professional-terminal-grid {
     grid-template-columns: 1fr;
+  }
+  .professional-terminal-grid.is-depth-collapsed {
+    grid-template-columns: 1fr;
+  }
+  .market-depth-panel {
+    min-height: 390px;
+    max-height: 390px;
+    border-right: 0;
+  }
+  .market-depth-panel.is-collapsed,
+  .market-depth-expand {
+    min-height: 42px;
+    max-height: 42px;
+  }
+  .market-depth-expand {
+    flex-direction: row;
+    justify-content: center;
+    padding: 0;
+  }
+  .market-depth-expand span {
+    writing-mode: horizontal-tb;
   }
   .chart-workspace {
     min-height: 520px;

@@ -4,7 +4,7 @@
   "packageManager": "pnpm@9.15.5",
   "scripts": {
     "build": "turbo run build",
-    "dev": "turbo run dev --parallel",
+    "dev": "NEXT_PUBLIC_API_URL=http://localhost:4000 NEXT_PUBLIC_WS_URL=ws://localhost:4000/v1/realtime turbo run dev --parallel",
     "db:migrate": "pnpm --filter @trade-the-pool/database db:migrate",
     "db:seed": "pnpm --filter @trade-the-pool/database db:seed",
     "simulate": "pnpm --filter @trade-the-pool/simulator simulate --",
