@@ -42,10 +42,14 @@ export type EntryEligibility = {
   entryClosesAt: Date | null;
   maxEntriesPerUser: number;
   entryCount: number;
-  pool: Money;
+  baseBankroll: Money;
+  currentPrizePool: Money;
   contribution: Money;
   userExists: boolean;
 };
+export function calculateNewEntryBankroll(baseBankroll: Money, currentPrizePool: Money): Money {
+  return addMoney(baseBankroll, currentPrizePool);
+}
 export function assertEntryEligibility(input: EntryEligibility, now: Date): void {
   if (!input.userExists) throw new DomainError('USER_NOT_FOUND', 'User does not exist');
   if (input.status !== 'OPEN')
@@ -54,7 +58,12 @@ export function assertEntryEligibility(input: EntryEligibility, now: Date): void
     throw new DomainError('ENTRY_CLOSED', 'Tournament entry period has closed');
   if (input.entryCount >= input.maxEntriesPerUser)
     throw new DomainError('ENTRY_LIMIT_REACHED', 'User has reached the tournament entry limit');
-  if (input.pool <= 0n) throw new DomainError('INVALID_POOL', 'Simulated pool must be positive');
+  if (input.baseBankroll < 0n)
+    throw new DomainError('INVALID_POOL', 'Base bankroll cannot be negative');
+  if (input.currentPrizePool < 0n)
+    throw new DomainError('INVALID_POOL', 'Current prize pool cannot be negative');
+  if (input.baseBankroll + input.currentPrizePool <= 0n)
+    throw new DomainError('INVALID_POOL', 'New entry bankroll must be positive');
   if (input.contribution < 0n)
     throw new DomainError(
       'INVALID_CONTRIBUTION',
@@ -72,7 +81,8 @@ export type CreatedEntry = {
   realizedPnL: string;
   unrealizedPnL: string;
   currentEquity: string;
-  updatedPool: string;
+  currentPrizePool: string;
+  newEntryBankroll: string;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -97,23 +107,25 @@ export async function createTournamentEntry(
       .where(
         and(eq(tournamentEntries.tournamentId, tournamentId), eq(tournamentEntries.userId, userId)),
       );
-    const pool = parseMoney(tournament.simulatedPool);
-    const contribution = parseMoney(tournament.simulatedEntryContribution);
+    const baseBankroll = parseMoney(tournament.baseBankroll);
+    const currentPrizePool = parseMoney(tournament.currentPrizePool);
+    const contribution = parseMoney(tournament.entryContribution);
     assertEntryEligibility(
       {
         status: tournament.status,
         entryClosesAt: tournament.entryClosesAt,
         maxEntriesPerUser: tournament.maxEntriesPerUser,
         entryCount: Number(entryCount),
-        pool,
+        baseBankroll,
+        currentPrizePool,
         contribution,
         userExists: Boolean(user),
       },
       now,
     );
     const sequenceNumber = Number(entryCount) + 1;
-    const updatedPool = addMoney(pool, contribution);
-    const bankroll = moneyToString(pool);
+    const updatedPrizePool = addMoney(currentPrizePool, contribution);
+    const bankroll = moneyToString(calculateNewEntryBankroll(baseBankroll, currentPrizePool));
     const [entry] = await tx
       .insert(tournamentEntries)
       .values({
@@ -138,7 +150,7 @@ export async function createTournamentEntry(
     });
     await tx
       .update(tournaments)
-      .set({ simulatedPool: moneyToString(updatedPool), updatedAt: now })
+      .set({ currentPrizePool: moneyToString(updatedPrizePool), updatedAt: now })
       .where(eq(tournaments.id, tournamentId));
     return {
       ...entry,
@@ -147,7 +159,8 @@ export async function createTournamentEntry(
       realizedPnL: '0.00',
       unrealizedPnL: '0.00',
       currentEquity: bankroll,
-      updatedPool: moneyToString(updatedPool),
+      currentPrizePool: moneyToString(updatedPrizePool),
+      newEntryBankroll: moneyToString(calculateNewEntryBankroll(baseBankroll, updatedPrizePool)),
     };
   });
 }

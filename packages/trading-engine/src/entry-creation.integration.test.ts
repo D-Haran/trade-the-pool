@@ -15,11 +15,11 @@ async function createFixture(options: { users?: number; maxEntriesPerUser?: numb
   const suffix = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const [tournament] = await client`
     INSERT INTO tournaments
-      (slug, name, description, status, simulated_pool, simulated_entry_contribution,
+      (slug, name, description, status, base_bankroll, current_prize_pool, entry_contribution,
        entry_closes_at, max_entries_per_user)
     VALUES
       (${`integration-${suffix}`}, 'Integration test', 'Integration test fixture', 'OPEN',
-       50000.00, 25.00, now() + interval '1 day', ${options.maxEntriesPerUser ?? 20})
+       10000.00, 500.00, 25.00, now() + interval '1 day', ${options.maxEntriesPerUser ?? 20})
     RETURNING id
   `;
   const userIds = await Promise.all(
@@ -90,6 +90,30 @@ async function removeFailureTrigger(kind: 'entry' | 'pool') {
 }
 
 describe('tournament entry creation concurrency (PostgreSQL)', () => {
+  it('uses the pre-contribution pool and permanently locks sequential bankroll snapshots', async () => {
+    await withFixture({ users: 2 }, async ({ tournamentId, userIds }) => {
+      const first = await createTournamentEntry(db, tournamentId, userIds[0]);
+      const second = await createTournamentEntry(db, tournamentId, userIds[1]);
+
+      expect(first).toMatchObject({
+        startingBankroll: '10500.00',
+        currentPrizePool: '525.00',
+        newEntryBankroll: '10525.00',
+      });
+      expect(second).toMatchObject({
+        startingBankroll: '10525.00',
+        currentPrizePool: '550.00',
+        newEntryBankroll: '10550.00',
+      });
+
+      const locked = await client`
+        SELECT id, starting_bankroll FROM tournament_entries
+        WHERE id IN (${first.id}, ${second.id}) ORDER BY starting_bankroll
+      `;
+      expect(locked.map((entry) => entry.starting_bankroll)).toEqual(['10500.00', '10525.00']);
+    });
+  });
+
   it('serializes two concurrent entrants with sequential sequences and snapshots', async () => {
     await withFixture({ users: 2 }, async ({ tournamentId, userIds }) => {
       const entries = await Promise.all(
@@ -97,18 +121,18 @@ describe('tournament entry creation concurrency (PostgreSQL)', () => {
       );
       expect(entries.map((entry) => entry.sequenceNumber).sort()).toEqual([1, 1]);
       expect(entries.map((entry) => entry.startingBankroll).sort()).toEqual([
-        '50000.00',
-        '50025.00',
+        '10500.00',
+        '10525.00',
       ]);
       expect(new Set(entries.map((entry) => entry.startingBankroll)).size).toBe(2);
-      expect(entries.map((entry) => entry.updatedPool).sort()).toEqual(['50025.00', '50050.00']);
+      expect(entries.map((entry) => entry.currentPrizePool).sort()).toEqual(['525.00', '550.00']);
       const [ledger] = await client`
         SELECT count(*)::int AS count, sum(amount)::text AS amount
         FROM account_ledger_entries
         WHERE entry_id = ANY(${client.array(entries.map((entry) => entry.id))}::uuid[])
           AND type = 'ACCOUNT_INITIALIZED'
       `;
-      expect(ledger).toEqual({ count: 2, amount: '100025.00' });
+      expect(ledger).toEqual({ count: 2, amount: '21025.00' });
     });
   });
 
@@ -121,19 +145,19 @@ describe('tournament entry creation concurrency (PostgreSQL)', () => {
       expect(new Set(entries.map((entry) => entry.startingBankroll)).size).toBe(10);
       expect(entries.map((entry) => entry.startingBankroll).sort()).toEqual(
         Array.from({ length: 10 }, (_, index) =>
-          moneyToString(addMoney(parseMoney('50000.00'), parseMoney(`${index * 25}.00`))),
+          moneyToString(addMoney(parseMoney('10500.00'), parseMoney(`${index * 25}.00`))),
         ),
       );
       expect(
         entries
-          .map((entry) => entry.updatedPool)
+          .map((entry) => entry.currentPrizePool)
           .sort()
           .at(-1),
-      ).toBe('50250.00');
+      ).toBe('750.00');
       const [tournament] = await client`
-        SELECT simulated_pool FROM tournaments WHERE id = ${tournamentId}
+        SELECT current_prize_pool FROM tournaments WHERE id = ${tournamentId}
       `;
-      expect(tournament.simulated_pool).toBe('50250.00');
+      expect(tournament.current_prize_pool).toBe('750.00');
     });
   });
 
@@ -156,9 +180,9 @@ describe('tournament entry creation concurrency (PostgreSQL)', () => {
         1, 2, 3,
       ]);
       const [tournament] = await client`
-        SELECT simulated_pool FROM tournaments WHERE id = ${tournamentId}
+        SELECT current_prize_pool FROM tournaments WHERE id = ${tournamentId}
       `;
-      expect(tournament.simulated_pool).toBe('50075.00');
+      expect(tournament.current_prize_pool).toBe('575.00');
     });
   });
 
@@ -173,11 +197,11 @@ describe('tournament entry creation concurrency (PostgreSQL)', () => {
         await removeFailureTrigger('entry');
       }
       const [state] = await client`
-        SELECT t.simulated_pool, count(e.id)::int AS entries
+        SELECT t.current_prize_pool, count(e.id)::int AS entries
         FROM tournaments t LEFT JOIN tournament_entries e ON e.tournament_id = t.id
         WHERE t.id = ${tournamentId} GROUP BY t.id
       `;
-      expect(state).toEqual({ simulated_pool: '50000.00', entries: 0 });
+      expect(state).toEqual({ current_prize_pool: '500.00', entries: 0 });
     });
   });
 
@@ -192,11 +216,11 @@ describe('tournament entry creation concurrency (PostgreSQL)', () => {
         await removeFailureTrigger('pool');
       }
       const [state] = await client`
-        SELECT t.simulated_pool, count(e.id)::int AS entries
+        SELECT t.current_prize_pool, count(e.id)::int AS entries
         FROM tournaments t LEFT JOIN tournament_entries e ON e.tournament_id = t.id
         WHERE t.id = ${tournamentId} GROUP BY t.id
       `;
-      expect(state).toEqual({ simulated_pool: '50000.00', entries: 0 });
+      expect(state).toEqual({ current_prize_pool: '500.00', entries: 0 });
     });
   });
 
@@ -222,11 +246,11 @@ describe('tournament entry creation concurrency (PostgreSQL)', () => {
         await client.unsafe('DROP FUNCTION IF EXISTS integration_fail_initial_ledger()');
       }
       const [state] = await client`
-        SELECT t.simulated_pool, count(e.id)::int AS entries
+        SELECT t.current_prize_pool, count(e.id)::int AS entries
         FROM tournaments t LEFT JOIN tournament_entries e ON e.tournament_id = t.id
         WHERE t.id = ${tournamentId} GROUP BY t.id
       `;
-      expect(state).toEqual({ simulated_pool: '50000.00', entries: 0 });
+      expect(state).toEqual({ current_prize_pool: '500.00', entries: 0 });
     });
   });
 });

@@ -4,6 +4,15 @@ import { fileURLToPath } from 'node:url';
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  transpilePackages: ['@trade-the-pool/shared', '@trade-the-pool/ui'],
   outputFileTracingRoot: resolve(dirname(fileURLToPath(import.meta.url)), '../..'),
+  webpack(config) {
+    config.resolve.extensionAlias = {
+      ...config.resolve.extensionAlias,
+      '.js': ['.ts', '.tsx', '.js'],
+      '.mjs': ['.mts', '.mjs'],
+    };
+    return config;
+  },
 };
 export default nextConfig;

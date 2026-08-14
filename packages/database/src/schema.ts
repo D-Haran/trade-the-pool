@@ -55,8 +55,9 @@ export const tournaments = pgTable(
     name: varchar('name', { length: 200 }).notNull(),
     description: text('description').notNull(),
     status: tournamentStatus('status').notNull().default('DRAFT'),
-    simulatedPool: numeric('simulated_pool', { precision: 20, scale: 2 }).notNull(),
-    simulatedEntryContribution: numeric('simulated_entry_contribution', {
+    baseBankroll: numeric('base_bankroll', { precision: 20, scale: 2 }).notNull(),
+    currentPrizePool: numeric('current_prize_pool', { precision: 20, scale: 2 }).notNull(),
+    entryContribution: numeric('entry_contribution', {
       precision: 20,
       scale: 2,
     }).notNull(),
@@ -66,7 +67,12 @@ export const tournaments = pgTable(
     maxEntriesPerUser: integer('max_entries_per_user').notNull(),
     ...timestamps,
   },
-  (table) => [uniqueIndex('tournaments_slug_idx').on(table.slug)],
+  (table) => [
+    uniqueIndex('tournaments_slug_idx').on(table.slug),
+    check('tournaments_base_bankroll_nonnegative', sql`${table.baseBankroll} >= 0`),
+    check('tournaments_current_prize_pool_nonnegative', sql`${table.currentPrizePool} >= 0`),
+    check('tournaments_entry_contribution_nonnegative', sql`${table.entryContribution} >= 0`),
+  ],
 );
 
 export const tournamentEntries = pgTable(

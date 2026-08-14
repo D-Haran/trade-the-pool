@@ -35,4 +35,16 @@ describe('DeterministicMarketPriceSource', () => {
     source.advancePrice('SOL-USD', '202.00', new Date('2026-01-01T00:00:02.000Z'));
     expect(received).toEqual(['201.00000000']);
   });
+
+  it('serves deterministic shared candle history and aggregates intervals', () => {
+    const source = new DeterministicMarketPriceSource(new Date('2026-01-01T12:00:00.000Z'));
+    const minutes = source.getCandles('BTC-USD', '1m', 10);
+    const fiveMinutes = source.getCandles('BTC-USD', '5m', 10);
+
+    expect(minutes).toHaveLength(10);
+    expect(fiveMinutes.length).toBeGreaterThan(1);
+    expect(fiveMinutes.length).toBeLessThanOrEqual(10);
+    expect(minutes.at(-1)?.close).toBe(source.getSnapshot('BTC-USD').price);
+    expect(minutes.every((candle) => candle.high >= candle.low)).toBe(true);
+  });
 });

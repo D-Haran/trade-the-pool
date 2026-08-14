@@ -12,6 +12,7 @@
     "lint": "turbo run lint",
     "test": "turbo run test",
     "test:integration": "pnpm --filter @trade-the-pool/trading-engine test:integration && pnpm --filter @trade-the-pool/api test:integration",
+    "test:e2e": "pnpm --filter @trade-the-pool/web test:e2e",
     "typecheck": "turbo run typecheck",
     "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm test:integration && pnpm build"
   },

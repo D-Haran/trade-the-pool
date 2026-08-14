@@ -8,7 +8,7 @@ wallets, and real-money functionality remain intentionally out of scope.
 
 `packages/database` owns the PostgreSQL/Drizzle schema for users, tournaments, and tournament entries. Tournament lifecycle transitions and entry creation live in `packages/trading-engine`; route handlers must not contain database queries.
 
-Tournament entry creation locks the tournament row with `SELECT ... FOR UPDATE`, snapshots the current `simulatedPool` as immutable `startingBankroll`, creates the entry, and increments the pool in one transaction. Concurrent entrants therefore receive distinct ordered snapshots and either the complete operation commits or neither the entry nor pool update remains.
+Tournament entry creation locks the tournament row with `SELECT ... FOR UPDATE`, snapshots `baseBankroll + currentPrizePool` as immutable `startingBankroll`, creates the entry, and then increments the prize pool in one transaction. Concurrent entrants therefore receive distinct ordered snapshots and either the complete operation commits or neither the entry nor prize-pool update remains.
 
 All financial values are PostgreSQL `NUMERIC(20,2)` and are represented in domain code as exact integer cents (`bigint`). Values crossing boundaries are serialized as strings such as `"50000.00"`; JavaScript floating-point arithmetic is not used for accounting.
 
@@ -64,3 +64,5 @@ The API validates required runtime configuration with Zod at startup. PostgreSQL
 database boundary; Redis stores expiring sessions, rate-limit counters, and recoverable realtime
 leaderboard projections only. See [`docs/api-realtime.md`](docs/api-realtime.md) for routes,
 security, recovery, and the frontend snapshot/subscription contract.
+The V1 routes, client state model, realtime lifecycle, chart, trading safeguards, and browser test
+coverage are documented in [`docs/frontend.md`](docs/frontend.md).

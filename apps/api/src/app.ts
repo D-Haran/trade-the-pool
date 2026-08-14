@@ -7,8 +7,10 @@ import websocket from '@fastify/websocket';
 import { sql } from 'drizzle-orm';
 import { users, type Database } from '@trade-the-pool/database';
 import {
+  marketSymbolSchema,
   orderRequestSchema,
   paginationSchema,
+  priceToString,
   uuidSchema,
   type Environment,
 } from '@trade-the-pool/shared';
@@ -33,7 +35,11 @@ import {
   TournamentReadService,
   TradingApiService,
 } from './services.js';
-import type { MarketPriceProvider } from '@trade-the-pool/market-data';
+import type {
+  ControllableMarketPriceProvider,
+  MarketHistoryProvider,
+  MarketPriceProvider,
+} from '@trade-the-pool/market-data';
 
 export type ApiRuntimeConfig = Pick<
   Environment,
@@ -462,6 +468,90 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
       return leaderboards.page(id, query, request.authenticatedUser?.id);
     },
   );
+
+  const marketParameterSchema = z.object({ symbol: marketSymbolSchema }).strict();
+  const candleQuerySchema = z
+    .object({
+      interval: z.enum(['1m', '5m', '15m', '1h']).default('1m'),
+      limit: z.coerce.number().int().min(1).max(500).default(240),
+    })
+    .strict();
+  app.get(
+    '/v1/markets/:symbol',
+    { schema: { tags: ['Markets'], params: openApiSchema(marketParameterSchema) } },
+    async (request) => {
+      const { symbol } = parse(marketParameterSchema, request.params);
+      const snapshot = await dependencies.market.getSnapshot(symbol);
+      return {
+        data: {
+          symbol: snapshot.symbol,
+          price: priceToString(snapshot.price),
+          marketTimestamp: snapshot.marketTimestamp,
+          source: snapshot.source,
+        },
+      };
+    },
+  );
+  app.get(
+    '/v1/markets/:symbol/candles',
+    {
+      schema: {
+        tags: ['Markets'],
+        params: openApiSchema(marketParameterSchema),
+        querystring: openApiSchema(candleQuerySchema),
+      },
+    },
+    async (request) => {
+      const { symbol } = parse(marketParameterSchema, request.params);
+      const { interval, limit } = parse(candleQuerySchema, request.query);
+      const market = dependencies.market as Partial<MarketHistoryProvider>;
+      if (typeof market.getCandles !== 'function')
+        throw new ApiError(404, 'NOT_FOUND', 'Market candle history is unavailable.');
+      return {
+        data: market.getCandles(symbol, interval, limit).map((candle) => ({
+          timestamp: candle.timestamp,
+          open: priceToString(candle.open),
+          high: priceToString(candle.high),
+          low: priceToString(candle.low),
+          close: priceToString(candle.close),
+        })),
+      };
+    },
+  );
+
+  if (config.NODE_ENV === 'development' && config.DEV_AUTH_ENABLED) {
+    const developmentMarketSchema = z
+      .object({
+        symbol: marketSymbolSchema,
+        price: z.string().regex(/^(?!0+(?:\.0+)?$)\d+(?:\.\d{1,8})?$/),
+      })
+      .strict();
+    app.post(
+      '/v1/dev/market/advance',
+      {
+        schema: {
+          tags: ['Development'],
+          body: openApiSchema(developmentMarketSchema),
+        },
+      },
+      async (request) => {
+        requireUser(request);
+        const body = parse(developmentMarketSchema, request.body);
+        const market = dependencies.market as Partial<ControllableMarketPriceProvider>;
+        if (typeof market.advancePrice !== 'function')
+          throw new ApiError(404, 'NOT_FOUND', 'Development market controls are unavailable.');
+        const snapshot = market.advancePrice(body.symbol, body.price, new Date());
+        return {
+          data: {
+            symbol: snapshot.symbol,
+            price: priceToString(snapshot.price),
+            marketTimestamp: snapshot.marketTimestamp,
+            source: snapshot.source,
+          },
+        };
+      },
+    );
+  }
 
   await app.register(async (realtimeApp) => {
     registerRealtime(realtimeApp, { hub, authorization, rateLimiter });

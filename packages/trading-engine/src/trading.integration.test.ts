@@ -25,11 +25,11 @@ async function createFixture(startingBankroll = '10000.00'): Promise<Fixture> {
   `;
   const [tournament] = await client`
     INSERT INTO tournaments
-      (slug, name, description, status, simulated_pool, simulated_entry_contribution,
+      (slug, name, description, status, base_bankroll, current_prize_pool, entry_contribution,
        entry_closes_at, trading_closes_at, max_entries_per_user)
     VALUES
       (${`trading-${suffix}`}, 'Trading integration', 'Trading fixture', 'OPEN',
-       ${startingBankroll}, 0.00, now() + interval '1 hour', now() + interval '2 hours', 1)
+       ${startingBankroll}, 0.00, 0.00, now() + interval '1 hour', now() + interval '2 hours', 1)
     RETURNING id
   `;
   const entry = await createTournamentEntry(db, tournament.id, user.id);

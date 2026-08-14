@@ -86,10 +86,10 @@ beforeAll(async () => {
   `;
   const [tournament] = await connection.client`
     INSERT INTO tournaments
-      (slug, name, description, status, simulated_pool, simulated_entry_contribution,
+      (slug, name, description, status, base_bankroll, current_prize_pool, entry_contribution,
        opens_at, entry_closes_at, trading_closes_at, max_entries_per_user)
     VALUES
-      (${`api-${suffix}`}, 'API integration', 'API fixture', 'OPEN', 10000.00, 25.00,
+      (${`api-${suffix}`}, 'API integration', 'API fixture', 'OPEN', 10000.00, 500.00, 25.00,
        now(), now() + interval '1 hour', now() + interval '2 hours', 3)
     RETURNING id
   `;
@@ -118,10 +118,39 @@ describe('V1 HTTP API', () => {
     const detail = await app.inject({ method: 'GET', url: `/v1/tournaments/${tournamentId}` });
     expect(detail.statusCode).toBe(200);
     expect(detail.json().data.allowedSymbols).toEqual(['BTC-USD', 'ETH-USD', 'SOL-USD']);
+    expect(detail.json().data.maxEntriesPerUser).toBe(3);
+    expect(detail.json().data).toMatchObject({
+      baseBankroll: '10000.00',
+      currentPrizePool: '500.00',
+      newEntryBankroll: '10500.00',
+      entryContribution: '25.00',
+    });
+
+    const bySlug = await app.inject({ method: 'GET', url: `/v1/tournaments/api-${suffix}` });
+    expect(bySlug.statusCode).toBe(200);
+    expect(bySlug.json().data.id).toBe(tournamentId);
 
     const unauthenticated = await app.inject({ method: 'GET', url: '/v1/me/entries' });
     expect(unauthenticated.statusCode).toBe(401);
     expect(unauthenticated.json().error).toMatchObject({ code: 'AUTHENTICATION_REQUIRED' });
+  });
+
+  it('provides authoritative market snapshots and deterministic candle history', async () => {
+    const snapshot = await app.inject({ method: 'GET', url: '/v1/markets/BTC-USD' });
+    expect(snapshot.statusCode).toBe(200);
+    expect(snapshot.json().data).toMatchObject({
+      symbol: 'BTC-USD',
+      price: '100000.00000000',
+      source: 'deterministic-memory-v1',
+    });
+
+    const candles = await app.inject({
+      method: 'GET',
+      url: '/v1/markets/BTC-USD/candles?interval=5m&limit=24',
+    });
+    expect(candles.statusCode).toBe(200);
+    expect(candles.json().data).toHaveLength(24);
+    expect(candles.json().data.at(-1)).toMatchObject({ close: '100000.00000000' });
   });
 
   it('identifies sessions, rejects invalid/expired sessions, and invalidates logout', async () => {
@@ -178,10 +207,28 @@ describe('V1 HTTP API', () => {
     expect(created.statusCode).toBe(201);
     expect(created.json().data).toMatchObject({
       sequenceNumber: 1,
-      startingBankroll: '10000.00',
-      tournamentPool: '10025.00',
+      startingBankroll: '10500.00',
+      currentPrizePool: '525.00',
+      newEntryBankroll: '10525.00',
     });
     entryId = created.json().data.id;
+
+    await connection.client`
+      UPDATE tournament_entries SET cash = 11500.00, current_equity = 11500.00 WHERE id = ${entryId}
+    `;
+    const scored = await app.inject({
+      method: 'GET',
+      url: `/v1/entries/${entryId}`,
+      headers: { cookie },
+    });
+    expect(scored.json().data).toMatchObject({
+      startingBankroll: '10500.00',
+      equity: '11500.00',
+      score: '1000.00',
+    });
+    await connection.client`
+      UPDATE tournament_entries SET cash = 10500.00, current_equity = 10500.00 WHERE id = ${entryId}
+    `;
 
     const impersonation = await app.inject({
       method: 'POST',
@@ -212,7 +259,7 @@ describe('V1 HTTP API', () => {
     expect(first.statusCode).toBe(201);
     expect(replay.statusCode).toBe(201);
     expect(replay.json().data.orderId).toBe(first.json().data.orderId);
-    expect(first.json().data).toMatchObject({ status: 'FILLED', resultingCash: '8999.00' });
+    expect(first.json().data).toMatchObject({ status: 'FILLED', resultingCash: '9499.00' });
 
     const positions = await app.inject({
       method: 'GET',
@@ -324,6 +371,32 @@ describe('V1 WebSocket API', () => {
     expect(await next()).toMatchObject({
       type: 'subscription.acknowledged',
       topic: `tournament:${tournamentId}`,
+    });
+
+    const secondEntry = await app.inject({
+      method: 'POST',
+      url: `/v1/tournaments/${tournamentId}/entries`,
+      headers: { cookie },
+      payload: {},
+    });
+    expect(secondEntry.statusCode).toBe(201);
+    expect(secondEntry.json().data).toMatchObject({
+      startingBankroll: '10525.00',
+      currentPrizePool: '550.00',
+      newEntryBankroll: '10550.00',
+    });
+    expect(await next()).toMatchObject({
+      topic: `tournament:${tournamentId}`,
+      event: { type: 'leaderboard.updated', tournamentId },
+    });
+    expect(await next()).toMatchObject({
+      topic: `tournament:${tournamentId}`,
+      event: {
+        type: 'tournament.prize_pool_updated',
+        currentPrizePool: '550.00',
+        newEntryBankroll: '10550.00',
+        totalEntries: 2,
+      },
     });
 
     socket.send(JSON.stringify({ action: 'subscribe', topic: 'market:SOL-USD' }));

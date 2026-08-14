@@ -18,17 +18,24 @@ Public tournament and leaderboard reads do not require login. An authorization s
 private entry policies. Entry details, positions, history, orders, and private realtime topics
 require the authenticated user to own the entry. No write route accepts a user ID.
 
+Tournament reads expose exact decimal strings for `baseBankroll`, `currentPrizePool`,
+`newEntryBankroll`, and `entryContribution`. The server derives `newEntryBankroll` as base plus
+the current prize pool; clients do not calculate authoritative financial projections.
+
 ## Routes
 
 - `GET /v1/auth/dev/users`, `POST /v1/auth/dev/login` (development only)
 - `GET /v1/auth/me`, `POST /v1/auth/logout`
 - `GET /v1/tournaments`, `GET /v1/tournaments/:id-or-slug`
+- `GET /v1/markets/:symbol`
+- `GET /v1/markets/:symbol/candles?interval=1m|5m|15m|1h&limit=...`
 - `POST /v1/tournaments/:id/entries`
 - `GET /v1/me/entries`
 - `GET /v1/entries/:id`, `/positions`, and `/orders`
 - `POST /v1/orders` with an `Idempotency-Key` header
 - `GET /v1/tournaments/:id/leaderboard`
 - `GET /v1/realtime` (WebSocket upgrade)
+- `POST /v1/dev/market/advance` (development auth only)
 - `GET /health/live`, `GET /health/ready`
 
 OpenAPI is generated from the same Zod request schemas registered with Fastify. In development,
@@ -49,6 +56,13 @@ V1 score is exact cents: `current equity - starting bankroll`. Rows sort by desc
 then entry creation time and entry ID. Maximum drawdown is not yet durable and is not fabricated.
 Percentage return is also calculated with integer arithmetic.
 
+Market snapshots and candles are produced by the authoritative market provider. The deterministic
+development provider maintains a bounded tick history and aggregates exact OHLC values into 1m,
+5m, 15m, and 1h candles. `MarketHistoryProvider` and `ControllableMarketPriceProvider` keep this
+behavior behind explicit interfaces so the development controls can be removed when a live source
+is connected. The development advance route accepts a validated symbol and decimal price but owns
+the event timestamp on the server.
+
 Redis stores one JSON ranking projection per tournament, already ordered using exact integer
 arithmetic. This deliberately avoids Redis sorted-set `double` precision. PostgreSQL, positions,
 and authoritative marks rebuild the full projection through `LeaderboardService.rebuild`. A
@@ -62,7 +76,7 @@ Clients first fetch REST state, connect, subscribe, and apply compact events. Af
 clients fetch REST again; V1 does not replay events. Allowed topics are:
 
 - `market:<symbol>` — public `market.price`
-- `tournament:<id>` — public `tournament.pool_updated`, `tournament.status_changed`, and
+- `tournament:<id>` — public `tournament.prize_pool_updated`, `tournament.status_changed`, and
   `leaderboard.updated`
 - `entry:<id>` — owner-only `entry.account_updated`
 
@@ -92,4 +106,6 @@ pnpm dev
 ```
 
 The seeded development identities have stable IDs, making repeated seeds idempotent. The frontend
-origin is `http://localhost:3000`; the API is `http://localhost:4000`.
+origin is `http://localhost:3000`; the API is `http://localhost:4000`. Both development servers
+bind to loopback by default. Set `API_HOST` deliberately if another interface is required; never
+expose development identity selection to an untrusted network.

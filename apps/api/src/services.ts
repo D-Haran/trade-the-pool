@@ -14,10 +14,17 @@ import {
   type MarketSymbol,
 } from '@trade-the-pool/market-data';
 import {
+  addMoney,
   divideRoundHalfUp,
   moneyFromMinorUnits,
+  moneyToString,
   parseMoney,
+  parsePrice,
+  parseQuantity,
+  parseSignedMoney,
+  priceQuantityToMoney,
   signedMoneyToString,
+  uuidSchema,
   type RealtimeEvent,
 } from '@trade-the-pool/shared';
 import {
@@ -55,11 +62,28 @@ export class AccountSnapshotService {
     const score = moneyFromMinorUnits(
       parseMoney(account.equity) - parseMoney(entry.startingBankroll),
     );
+    const projectedPositions = account.positions.map((position) => {
+      const quantity = parseQuantity(position.quantity);
+      const costBasis =
+        quantity === 0n
+          ? moneyFromMinorUnits(0n)
+          : priceQuantityToMoney(parsePrice(position.averageEntryPrice), quantity);
+      const percentageHundredths =
+        costBasis === 0n
+          ? moneyFromMinorUnits(0n)
+          : moneyFromMinorUnits(
+              divideRoundHalfUp(parseSignedMoney(position.unrealizedPnL) * 10_000n, costBasis),
+            );
+      return {
+        ...position,
+        percentageReturn: signedMoneyToString(percentageHundredths),
+      };
+    });
     return {
       ...account,
       startingBankroll: entry.startingBankroll,
       score: signedMoneyToString(score),
-      positions: account.positions,
+      positions: projectedPositions,
     };
   }
 }
@@ -119,11 +143,14 @@ export class TournamentReadService {
   }
 
   async detail(identifier: string, userId?: string) {
+    const identifierCondition = uuidSchema.safeParse(identifier).success
+      ? or(eq(tournaments.id, identifier), eq(tournaments.slug, identifier))
+      : eq(tournaments.slug, identifier);
     const [row] = await this.db
       .select({ tournament: tournaments, totalEntries: count(tournamentEntries.id) })
       .from(tournaments)
       .leftJoin(tournamentEntries, eq(tournamentEntries.tournamentId, tournaments.id))
-      .where(or(eq(tournaments.id, identifier), eq(tournaments.slug, identifier)))
+      .where(identifierCondition)
       .groupBy(tournaments.id);
     if (!row) throw new ApiError(404, 'NOT_FOUND', 'Tournament does not exist.');
     let userEntryCount: number | null = null;
@@ -160,13 +187,18 @@ export class TournamentReadService {
       name: tournament.name,
       description: tournament.description,
       status: tournament.status,
-      simulatedPool: tournament.simulatedPool,
-      entryContribution: tournament.simulatedEntryContribution,
+      baseBankroll: tournament.baseBankroll,
+      currentPrizePool: tournament.currentPrizePool,
+      newEntryBankroll: moneyToString(
+        addMoney(parseMoney(tournament.baseBankroll), parseMoney(tournament.currentPrizePool)),
+      ),
+      entryContribution: tournament.entryContribution,
       opensAt: tournament.opensAt,
       entryClosesAt: tournament.entryClosesAt,
       tradingClosesAt: tournament.tradingClosesAt,
       allowedSymbols: SUPPORTED_SYMBOLS,
       totalEntries,
+      maxEntriesPerUser: tournament.maxEntriesPerUser,
       eligibleToEnter: eligible,
     };
   }
@@ -343,9 +375,10 @@ export class TradingApiService {
       .where(eq(tournamentEntries.tournamentId, tournamentId));
     await this.leaderboards.refreshEntry(tournamentId, entry.id);
     this.events.publish(`tournament:${tournamentId}`, {
-      type: 'tournament.pool_updated',
+      type: 'tournament.prize_pool_updated',
       tournamentId,
-      simulatedPool: entry.updatedPool,
+      currentPrizePool: entry.currentPrizePool,
+      newEntryBankroll: entry.newEntryBankroll,
       totalEntries: Number(totalEntries),
     });
     return {
@@ -354,7 +387,8 @@ export class TradingApiService {
       startingBankroll: entry.startingBankroll,
       cash: entry.cash,
       equity: entry.currentEquity,
-      tournamentPool: entry.updatedPool,
+      currentPrizePool: entry.currentPrizePool,
+      newEntryBankroll: entry.newEntryBankroll,
       createdAt: entry.createdAt,
     };
   }
@@ -414,21 +448,55 @@ export class EntryReadService {
       .orderBy(desc(tournamentEntries.createdAt), asc(tournamentEntries.id))
       .limit(pagination.pageSize)
       .offset((pagination.page - 1) * pagination.pageSize);
+    const tournamentIds = [...new Set(rows.map(({ tournament }) => tournament.id))];
+    const rankings = new Map(
+      await Promise.all(
+        tournamentIds.map(
+          async (tournamentId) =>
+            [
+              tournamentId,
+              new Map(
+                (await this.leaderboards.rows(tournamentId)).map((row) => [row.entryId, row.rank]),
+              ),
+            ] as const,
+        ),
+      ),
+    );
+    const data = await Promise.all(
+      rows.map(async ({ entry, tournament }) => {
+        const snapshot = await this.snapshots.get(entry.id);
+        return {
+          id: entry.id,
+          sequenceNumber: entry.sequenceNumber,
+          startingBankroll: entry.startingBankroll,
+          cash: snapshot.cash,
+          realizedPnL: snapshot.realizedPnL,
+          unrealizedPnL: snapshot.unrealizedPnL,
+          equity: snapshot.equity,
+          score: snapshot.score,
+          percentageReturn: signedMoneyToString(
+            moneyFromMinorUnits(
+              divideRoundHalfUp(
+                parseSignedMoney(snapshot.score) * 10_000n,
+                parseMoney(entry.startingBankroll),
+              ),
+            ),
+          ),
+          rank: rankings.get(tournament.id)?.get(entry.id) ?? null,
+          createdAt: entry.createdAt,
+          tournament: {
+            id: tournament.id,
+            slug: tournament.slug,
+            name: tournament.name,
+            status: tournament.status,
+            entryClosesAt: tournament.entryClosesAt,
+            tradingClosesAt: tournament.tradingClosesAt,
+          },
+        };
+      }),
+    );
     return {
-      data: rows.map(({ entry, tournament }) => ({
-        id: entry.id,
-        sequenceNumber: entry.sequenceNumber,
-        startingBankroll: entry.startingBankroll,
-        cash: entry.cash,
-        equity: entry.currentEquity,
-        createdAt: entry.createdAt,
-        tournament: {
-          id: tournament.id,
-          slug: tournament.slug,
-          name: tournament.name,
-          status: tournament.status,
-        },
-      })),
+      data,
       pagination: pageMetadata(pagination.page, pagination.pageSize, Number(total)),
     };
   }
@@ -451,6 +519,8 @@ export class EntryReadService {
         slug: row.tournament.slug,
         name: row.tournament.name,
         status: row.tournament.status,
+        entryClosesAt: row.tournament.entryClosesAt,
+        tradingClosesAt: row.tournament.tradingClosesAt,
       },
       sequenceNumber: row.entry.sequenceNumber,
       startingBankroll: row.entry.startingBankroll,
@@ -459,6 +529,14 @@ export class EntryReadService {
       unrealizedPnL: snapshot.unrealizedPnL,
       equity: snapshot.equity,
       score: snapshot.score,
+      percentageReturn: signedMoneyToString(
+        moneyFromMinorUnits(
+          divideRoundHalfUp(
+            parseSignedMoney(snapshot.score) * 10_000n,
+            parseMoney(row.entry.startingBankroll),
+          ),
+        ),
+      ),
       rank: rank ?? null,
       createdAt: row.entry.createdAt,
     };

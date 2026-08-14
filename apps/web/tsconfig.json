@@ -8,6 +8,8 @@
       }
     ],
     "lib": ["dom", "dom.iterable", "esnext"],
+    "baseUrl": ".",
+    "paths": { "@/*": ["./*"] },
     "allowJs": true,
     "incremental": true,
     "isolatedModules": true
