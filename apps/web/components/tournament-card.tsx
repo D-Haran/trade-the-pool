@@ -23,7 +23,12 @@ export function TournamentCard({ tournament }: { tournament: TournamentDto }) {
         <strong key={tournament.currentPrizePool} className="live-number">
           {formatCompactUsd(tournament.currentPrizePool)}
         </strong>
-        <small>Enter with {formatCompactUsd(tournament.newEntryBankroll)}</small>
+        <small>New entry bankroll {formatCompactUsd(tournament.newEntryBankroll)}</small>
+        <div className="tournament-card__prizes">
+          <span>1st {formatCompactUsd(tournament.payoutProjection.firstPrize)}</span>
+          <span>2nd {formatCompactUsd(tournament.payoutProjection.secondPrize)}</span>
+          <span>3rd {formatCompactUsd(tournament.payoutProjection.thirdPrize)}</span>
+        </div>
       </div>
       <div className="tournament-card__meta">
         <div>
@@ -34,15 +39,21 @@ export function TournamentCard({ tournament }: { tournament: TournamentDto }) {
           <Timer aria-hidden="true" />
           <Countdown
             endsAt={
-              tournament.status === 'OPEN' ? tournament.entryClosesAt : tournament.tradingClosesAt
+              tournament.status === 'REGISTRATION_OPEN' || tournament.status === 'TRADING_ACTIVE'
+                ? tournament.entryClosesAt
+                : tournament.tradingClosesAt
             }
-            prefix={tournament.status === 'OPEN' ? 'Entry' : 'Trading'}
+            prefix={
+              tournament.status === 'REGISTRATION_OPEN' || tournament.status === 'TRADING_ACTIVE'
+                ? 'Entry'
+                : 'Trading'
+            }
           />
         </div>
       </div>
       <div className="tournament-card__contribution">
-        <span>Simulated contribution</span>
-        <strong>{formatUsd(tournament.entryContribution)}</strong>
+        <span>Entry now</span>
+        <strong>{formatUsd(tournament.currentEntryPrice)}</strong>
       </div>
     </Link>
   );

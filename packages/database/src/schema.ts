@@ -16,7 +16,8 @@ import {
 
 export const tournamentStatus = pgEnum('tournament_status', [
   'DRAFT',
-  'OPEN',
+  'REGISTRATION_OPEN',
+  'TRADING_ACTIVE',
   'ENTRY_CLOSED',
   'TRADING_CLOSED',
   'FINALIZING',
@@ -25,8 +26,24 @@ export const tournamentStatus = pgEnum('tournament_status', [
 ]);
 export const tradingSymbol = pgEnum('trading_symbol', ['BTC-USD', 'ETH-USD', 'SOL-USD']);
 export const orderSide = pgEnum('order_side', ['BUY', 'SELL']);
-export const orderType = pgEnum('order_type', ['MARKET']);
-export const orderStatus = pgEnum('order_status', ['PENDING', 'FILLED', 'REJECTED']);
+export const positionSide = pgEnum('position_side', ['LONG', 'SHORT']);
+export const orderIntent = pgEnum('order_intent', ['OPEN', 'CLOSE']);
+export const orderType = pgEnum('order_type', [
+  'MARKET',
+  'LIMIT',
+  'STOP_MARKET',
+  'TAKE_PROFIT',
+  'STOP_LOSS',
+]);
+export const orderStatus = pgEnum('order_status', [
+  'PENDING',
+  'OPEN',
+  'TRIGGERED',
+  'FILLED',
+  'CANCELLED',
+  'REJECTED',
+  'EXPIRED',
+]);
 export const ledgerEntryType = pgEnum('ledger_entry_type', [
   'ACCOUNT_INITIALIZED',
   'TRADE_CASH_DEBIT',
@@ -57,21 +74,71 @@ export const tournaments = pgTable(
     status: tournamentStatus('status').notNull().default('DRAFT'),
     baseBankroll: numeric('base_bankroll', { precision: 20, scale: 2 }).notNull(),
     currentPrizePool: numeric('current_prize_pool', { precision: 20, scale: 2 }).notNull(),
-    entryContribution: numeric('entry_contribution', {
-      precision: 20,
-      scale: 2,
-    }).notNull(),
-    opensAt: timestamp('opens_at', { withTimezone: true }),
-    entryClosesAt: timestamp('entry_closes_at', { withTimezone: true }),
-    tradingClosesAt: timestamp('trading_closes_at', { withTimezone: true }),
+    registrationOpensAt: timestamp('registration_opens_at', { withTimezone: true }).notNull(),
+    tradingStartsAt: timestamp('trading_starts_at', { withTimezone: true }).notNull(),
+    entryClosesAt: timestamp('entry_closes_at', { withTimezone: true }).notNull(),
+    tradingClosesAt: timestamp('trading_closes_at', { withTimezone: true }).notNull(),
     maxEntriesPerUser: integer('max_entries_per_user').notNull(),
+    payoutConfig: jsonb('payout_config')
+      .$type<{
+        directPrizes: Array<{ position: number; basisPoints: number }>;
+        additionalCashLine?: { percentileBasisPoints: number; allocationBasisPoints: number };
+      }>()
+      .notNull(),
+    rakebackConfig: jsonb('rakeback_config').$type<{
+      bands: Array<{ entryCount: number; rebateBasisPoints: number }>;
+    } | null>(),
     ...timestamps,
   },
   (table) => [
     uniqueIndex('tournaments_slug_idx').on(table.slug),
     check('tournaments_base_bankroll_nonnegative', sql`${table.baseBankroll} >= 0`),
     check('tournaments_current_prize_pool_nonnegative', sql`${table.currentPrizePool} >= 0`),
-    check('tournaments_entry_contribution_nonnegative', sql`${table.entryContribution} >= 0`),
+    check('tournaments_max_entries_positive', sql`${table.maxEntriesPerUser} > 0`),
+    check(
+      'tournaments_schedule_ordered',
+      sql`${table.registrationOpensAt} <= ${table.tradingStartsAt} AND ${table.tradingStartsAt} < ${table.entryClosesAt} AND ${table.entryClosesAt} <= ${table.tradingClosesAt}`,
+    ),
+  ],
+);
+
+export const tournamentEntryFeeTiers = pgTable(
+  'tournament_entry_fee_tiers',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tournamentId: uuid('tournament_id')
+      .notNull()
+      .references(() => tournaments.id),
+    ordinal: integer('ordinal').notNull(),
+    minPrizePool: numeric('min_prize_pool', { precision: 20, scale: 2 }).notNull(),
+    maxPrizePool: numeric('max_prize_pool', { precision: 20, scale: 2 }),
+    entryFee: numeric('entry_fee', { precision: 20, scale: 2 }).notNull(),
+    prizePoolContribution: numeric('prize_pool_contribution', {
+      precision: 20,
+      scale: 2,
+    }).notNull(),
+    platformFee: numeric('platform_fee', { precision: 20, scale: 2 }).notNull(),
+    futureRewardAllocation: numeric('future_reward_allocation', {
+      precision: 20,
+      scale: 2,
+    })
+      .notNull()
+      .default('0.00'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('tournament_fee_tiers_ordinal_idx').on(table.tournamentId, table.ordinal),
+    uniqueIndex('tournament_fee_tiers_min_pool_idx').on(table.tournamentId, table.minPrizePool),
+    check('tournament_fee_tiers_ordinal_nonnegative', sql`${table.ordinal} >= 0`),
+    check('tournament_fee_tiers_min_nonnegative', sql`${table.minPrizePool} >= 0`),
+    check(
+      'tournament_fee_tiers_range_valid',
+      sql`${table.maxPrizePool} IS NULL OR ${table.maxPrizePool} > ${table.minPrizePool}`,
+    ),
+    check(
+      'tournament_fee_tiers_allocations_valid',
+      sql`${table.entryFee} >= 0 AND ${table.prizePoolContribution} >= 0 AND ${table.platformFee} >= 0 AND ${table.futureRewardAllocation} >= 0 AND ${table.entryFee} = ${table.prizePoolContribution} + ${table.platformFee} + ${table.futureRewardAllocation}`,
+    ),
   ],
 );
 
@@ -86,6 +153,33 @@ export const tournamentEntries = pgTable(
       .notNull()
       .references(() => users.id),
     sequenceNumber: integer('sequence_number').notNull(),
+    tournamentEntryNumber: integer('tournament_entry_number').notNull(),
+    entryFee: numeric('entry_fee', { precision: 20, scale: 2 }).notNull(),
+    prizePoolBeforeEntry: numeric('prize_pool_before_entry', {
+      precision: 20,
+      scale: 2,
+    }).notNull(),
+    prizePoolContribution: numeric('prize_pool_contribution', {
+      precision: 20,
+      scale: 2,
+    }).notNull(),
+    platformAllocation: numeric('platform_allocation', {
+      precision: 20,
+      scale: 2,
+    }).notNull(),
+    futureRewardAllocation: numeric('future_reward_allocation', {
+      precision: 20,
+      scale: 2,
+    })
+      .notNull()
+      .default('0.00'),
+    rakebackAmount: numeric('rakeback_amount', { precision: 20, scale: 2 })
+      .notNull()
+      .default('0.00'),
+    baseBankrollSnapshot: numeric('base_bankroll_snapshot', {
+      precision: 20,
+      scale: 2,
+    }).notNull(),
     startingBankroll: numeric('starting_bankroll', { precision: 20, scale: 2 }).notNull(),
     cash: numeric('cash', { precision: 20, scale: 2 }).notNull(),
     realizedPnL: numeric('realized_pnl', { precision: 20, scale: 2 }).notNull(),
@@ -99,6 +193,27 @@ export const tournamentEntries = pgTable(
       table.userId,
       table.sequenceNumber,
     ),
+    uniqueIndex('tournament_entries_tournament_number_idx').on(
+      table.tournamentId,
+      table.tournamentEntryNumber,
+    ),
+    check('tournament_entries_sequence_positive', sql`${table.sequenceNumber} > 0`),
+    check(
+      'tournament_entries_economics_nonnegative',
+      sql`${table.tournamentEntryNumber} > 0 AND ${table.entryFee} >= 0 AND ${table.prizePoolBeforeEntry} >= 0 AND ${table.prizePoolContribution} >= 0 AND ${table.platformAllocation} >= 0 AND ${table.futureRewardAllocation} >= 0 AND ${table.rakebackAmount} >= 0 AND ${table.baseBankrollSnapshot} >= 0 AND ${table.startingBankroll} > 0`,
+    ),
+    check(
+      'tournament_entries_bankroll_snapshot_valid',
+      sql`${table.startingBankroll} = ${table.baseBankrollSnapshot} + ${table.prizePoolBeforeEntry}`,
+    ),
+    check(
+      'tournament_entries_fee_snapshot_valid',
+      sql`${table.entryFee} = ${table.prizePoolContribution} + ${table.platformAllocation} + ${table.futureRewardAllocation}`,
+    ),
+    check(
+      'tournament_entries_rakeback_bounded',
+      sql`${table.rakebackAmount} <= ${table.platformAllocation}`,
+    ),
   ],
 );
 
@@ -111,12 +226,23 @@ export const orders = pgTable(
       .references(() => tournamentEntries.id),
     symbol: tradingSymbol('symbol').notNull(),
     side: orderSide('side').notNull(),
+    positionSide: positionSide('position_side').notNull().default('LONG'),
+    intent: orderIntent('intent').notNull().default('OPEN'),
     orderType: orderType('order_type').notNull().default('MARKET'),
     requestedNotional: numeric('requested_notional', { precision: 20, scale: 2 }),
     requestedQuantity: numeric('requested_quantity', { precision: 28, scale: 8 }),
     requestedPercentageBps: integer('requested_percentage_bps'),
+    limitPrice: numeric('limit_price', { precision: 28, scale: 8 }),
+    triggerPrice: numeric('trigger_price', { precision: 28, scale: 8 }),
     status: orderStatus('status').notNull().default('PENDING'),
     idempotencyKey: varchar('idempotency_key', { length: 128 }).notNull(),
+    parentOrderId: uuid('parent_order_id'),
+    ocoGroupId: uuid('oco_group_id'),
+    rejectionReason: varchar('rejection_reason', { length: 160 }),
+    cancellationReason: varchar('cancellation_reason', { length: 160 }),
+    triggeredAt: timestamp('triggered_at', { withTimezone: true }),
+    filledAt: timestamp('filled_at', { withTimezone: true }),
+    cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
     ...timestamps,
   },
   (table) => [
@@ -135,7 +261,11 @@ export const orders = pgTable(
     ),
     check(
       'orders_request_shape_valid',
-      sql`(${table.side} = 'BUY' AND ${table.requestedNotional} IS NOT NULL AND ${table.requestedQuantity} IS NULL AND ${table.requestedPercentageBps} IS NULL) OR (${table.side} = 'SELL' AND ${table.requestedNotional} IS NULL AND ((${table.requestedQuantity} IS NOT NULL)::int + (${table.requestedPercentageBps} IS NOT NULL)::int) = 1)`,
+      sql`(${table.intent} = 'OPEN' AND ${table.requestedNotional} IS NOT NULL AND ${table.requestedQuantity} IS NULL AND ${table.requestedPercentageBps} IS NULL) OR (${table.intent} = 'CLOSE' AND ${table.requestedNotional} IS NULL AND ((${table.requestedQuantity} IS NOT NULL)::int + (${table.requestedPercentageBps} IS NOT NULL)::int) = 1)`,
+    ),
+    check(
+      'orders_price_shape_valid',
+      sql`(${table.orderType} = 'MARKET' AND ${table.limitPrice} IS NULL AND ${table.triggerPrice} IS NULL) OR (${table.orderType} = 'LIMIT' AND ${table.limitPrice} IS NOT NULL AND ${table.triggerPrice} IS NULL) OR (${table.orderType} IN ('STOP_MARKET', 'TAKE_PROFIT', 'STOP_LOSS') AND ${table.limitPrice} IS NULL AND ${table.triggerPrice} IS NOT NULL)`,
     ),
   ],
 );
@@ -153,6 +283,8 @@ export const fills = pgTable(
     executionSequence: integer('execution_sequence').notNull(),
     symbol: tradingSymbol('symbol').notNull(),
     side: orderSide('side').notNull(),
+    positionSide: positionSide('position_side').notNull().default('LONG'),
+    intent: orderIntent('intent').notNull().default('OPEN'),
     referencePrice: numeric('reference_price', { precision: 28, scale: 8 }).notNull(),
     fillPrice: numeric('fill_price', { precision: 28, scale: 8 }).notNull(),
     quantity: numeric('quantity', { precision: 28, scale: 8 }).notNull(),
@@ -160,6 +292,7 @@ export const fills = pgTable(
     spreadAmount: numeric('spread_amount', { precision: 28, scale: 8 }).notNull(),
     slippageAmount: numeric('slippage_amount', { precision: 28, scale: 8 }).notNull(),
     feeAmount: numeric('fee_amount', { precision: 20, scale: 2 }).notNull(),
+    realizedPnL: numeric('realized_pnl', { precision: 20, scale: 2 }).notNull().default('0.00'),
     marketSource: varchar('market_source', { length: 64 }).notNull(),
     marketTimestamp: timestamp('market_timestamp', { withTimezone: true }).notNull(),
     serverTimestamp: timestamp('server_timestamp', { withTimezone: true }).notNull(),
@@ -185,6 +318,7 @@ export const positions = pgTable(
       .notNull()
       .references(() => tournamentEntries.id),
     symbol: tradingSymbol('symbol').notNull(),
+    side: positionSide('side').notNull().default('LONG'),
     quantity: numeric('quantity', { precision: 28, scale: 8 }).notNull(),
     averageEntryPrice: numeric('average_entry_price', { precision: 28, scale: 8 }).notNull(),
     realizedPnL: numeric('realized_pnl', { precision: 20, scale: 2 }).notNull(),
@@ -231,6 +365,7 @@ export const accountLedgerEntries = pgTable(
 
 export const tournamentRelations = relations(tournaments, ({ many }) => ({
   entries: many(tournamentEntries),
+  feeTiers: many(tournamentEntryFeeTiers),
 }));
 export const entryRelations = relations(tournamentEntries, ({ one }) => ({
   tournament: one(tournaments, {
@@ -248,4 +383,5 @@ export const schema = {
   fills,
   positions,
   accountLedgerEntries,
+  tournamentEntryFeeTiers,
 };

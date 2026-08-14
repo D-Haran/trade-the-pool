@@ -4,6 +4,7 @@ import {
   orders,
   positions,
   tournamentEntries,
+  tournamentEntryFeeTiers,
   tournaments,
   users,
   type Database,
@@ -28,10 +29,18 @@ import {
   type RealtimeEvent,
 } from '@trade-the-pool/shared';
 import {
+  cancelTradingOrder,
   createTournamentEntry,
-  executeMarketOrder,
   getAccountSummary,
-  type MarketOrderRequest,
+  applicableEntryFeeTier,
+  nextEntryFeeTier,
+  projectPayouts,
+  processConditionalOrders,
+  scheduledTournamentStatus,
+  setPositionProtection,
+  submitTradingOrder,
+  type EntryFeeTier,
+  type TradingOrderRequest,
 } from '@trade-the-pool/trading-engine';
 import type { KeyValueStore } from './infrastructure.js';
 import { ApiError } from './errors.js';
@@ -59,6 +68,29 @@ export class AccountSnapshotService {
       .where(eq(tournamentEntries.id, entryId));
     if (!entry) throw new ApiError(404, 'NOT_FOUND', 'Tournament entry does not exist.');
     const account = await getAccountSummary(this.db, this.market, entryId);
+    const protectionRows = await this.db
+      .select({
+        symbol: orders.symbol,
+        orderType: orders.orderType,
+        triggerPrice: orders.triggerPrice,
+      })
+      .from(orders)
+      .where(
+        and(eq(orders.entryId, entryId), eq(orders.intent, 'CLOSE'), eq(orders.status, 'OPEN')),
+      );
+    const protections = new Map<
+      MarketSymbol,
+      { takeProfitPrice: string | null; stopLossPrice: string | null }
+    >();
+    for (const row of protectionRows) {
+      const current = protections.get(row.symbol) ?? {
+        takeProfitPrice: null,
+        stopLossPrice: null,
+      };
+      if (row.orderType === 'TAKE_PROFIT') current.takeProfitPrice = row.triggerPrice;
+      if (row.orderType === 'STOP_LOSS') current.stopLossPrice = row.triggerPrice;
+      protections.set(row.symbol, current);
+    }
     const score = moneyFromMinorUnits(
       parseMoney(account.equity) - parseMoney(entry.startingBankroll),
     );
@@ -77,6 +109,10 @@ export class AccountSnapshotService {
       return {
         ...position,
         percentageReturn: signedMoneyToString(percentageHundredths),
+        ...(protections.get(position.symbol) ?? {
+          takeProfitPrice: null,
+          stopLossPrice: null,
+        }),
       };
     });
     return {
@@ -131,11 +167,13 @@ export class TournamentReadService {
       : [];
     const counts = new Map(entryCounts.map((row) => [row.tournamentId, Number(row.value)]));
     return {
-      data: rows.map(({ tournament, totalEntries }) =>
-        this.publicTournament(
-          tournament,
-          Number(totalEntries),
-          userId ? (counts.get(tournament.id) ?? 0) : null,
+      data: await Promise.all(
+        rows.map(({ tournament, totalEntries }) =>
+          this.publicTournament(
+            tournament,
+            Number(totalEntries),
+            userId ? (counts.get(tournament.id) ?? 0) : null,
+          ),
         ),
       ),
       pagination: pageMetadata(pagination.page, pagination.pageSize, Number(total)),
@@ -169,31 +207,93 @@ export class TournamentReadService {
     return this.publicTournament(row.tournament, Number(row.totalEntries), userEntryCount);
   }
 
-  private publicTournament(
+  private async publicTournament(
     tournament: typeof tournaments.$inferSelect,
     totalEntries: number,
     userEntryCount: number | null,
   ) {
-    const now = Date.now();
+    const now = new Date();
+    const status = scheduledTournamentStatus(
+      tournament.status,
+      {
+        registrationOpensAt: tournament.registrationOpensAt,
+        tradingStartsAt: tournament.tradingStartsAt,
+        entryClosesAt: tournament.entryClosesAt,
+        tradingClosesAt: tournament.tradingClosesAt,
+      },
+      now,
+    );
+    const tierRows = await this.db
+      .select()
+      .from(tournamentEntryFeeTiers)
+      .where(eq(tournamentEntryFeeTiers.tournamentId, tournament.id))
+      .orderBy(asc(tournamentEntryFeeTiers.ordinal));
+    const exactTiers: EntryFeeTier[] = tierRows.map((tier) => ({
+      ordinal: tier.ordinal,
+      minPrizePool: parseMoney(tier.minPrizePool),
+      maxPrizePool: tier.maxPrizePool === null ? null : parseMoney(tier.maxPrizePool),
+      entryFee: parseMoney(tier.entryFee),
+      prizePoolContribution: parseMoney(tier.prizePoolContribution),
+      platformFee: parseMoney(tier.platformFee),
+      futureRewardAllocation: parseMoney(tier.futureRewardAllocation),
+    }));
+    const currentTier = applicableEntryFeeTier(exactTiers, parseMoney(tournament.currentPrizePool));
+    const followingTier = nextEntryFeeTier(exactTiers, currentTier);
+    const payout = projectPayouts(
+      parseMoney(tournament.currentPrizePool),
+      tournament.payoutConfig,
+      totalEntries,
+    );
     const eligible =
       userEntryCount === null
         ? null
-        : tournament.status === 'OPEN' &&
-          (!tournament.entryClosesAt || tournament.entryClosesAt.getTime() > now) &&
+        : (status === 'REGISTRATION_OPEN' || status === 'TRADING_ACTIVE') &&
           userEntryCount < tournament.maxEntriesPerUser;
     return {
       id: tournament.id,
       slug: tournament.slug,
       name: tournament.name,
       description: tournament.description,
-      status: tournament.status,
+      status,
       baseBankroll: tournament.baseBankroll,
       currentPrizePool: tournament.currentPrizePool,
       newEntryBankroll: moneyToString(
         addMoney(parseMoney(tournament.baseBankroll), parseMoney(tournament.currentPrizePool)),
       ),
-      entryContribution: tournament.entryContribution,
-      opensAt: tournament.opensAt,
+      currentEntryPrice: moneyToString(currentTier.entryFee),
+      prizePoolContribution: moneyToString(currentTier.prizePoolContribution),
+      platformFee: moneyToString(currentTier.platformFee),
+      futureRewardAllocation: moneyToString(currentTier.futureRewardAllocation),
+      nextEntryPrice: followingTier
+        ? {
+            prizePoolThreshold: moneyToString(followingTier.minPrizePool),
+            entryFee: moneyToString(followingTier.entryFee),
+          }
+        : null,
+      feeTiers: exactTiers.map((tier) => ({
+        ordinal: tier.ordinal,
+        minPrizePool: moneyToString(tier.minPrizePool),
+        maxPrizePool: tier.maxPrizePool === null ? null : moneyToString(tier.maxPrizePool),
+        entryFee: moneyToString(tier.entryFee),
+        prizePoolContribution: moneyToString(tier.prizePoolContribution),
+        platformFee: moneyToString(tier.platformFee),
+        futureRewardAllocation: moneyToString(tier.futureRewardAllocation),
+      })),
+      payoutProjection: {
+        ...payout,
+        prizes: payout.prizes.map((prize) => ({
+          ...prize,
+          amount: moneyToString(prize.amount),
+        })),
+        firstPrize: moneyToString(payout.firstPrize),
+        secondPrize: moneyToString(payout.secondPrize),
+        thirdPrize: moneyToString(payout.thirdPrize),
+        distributableAmount: moneyToString(payout.distributableAmount),
+        allocatedAmount: moneyToString(payout.allocatedAmount),
+        unallocatedAmount: moneyToString(payout.unallocatedAmount),
+      },
+      registrationOpensAt: tournament.registrationOpensAt,
+      tradingStartsAt: tournament.tradingStartsAt,
       entryClosesAt: tournament.entryClosesAt,
       tradingClosesAt: tournament.tradingClosesAt,
       allowedSymbols: SUPPORTED_SYMBOLS,
@@ -379,11 +479,20 @@ export class TradingApiService {
       tournamentId,
       currentPrizePool: entry.currentPrizePool,
       newEntryBankroll: entry.newEntryBankroll,
+      currentEntryPrice: entry.currentEntryFee,
       totalEntries: Number(totalEntries),
     });
     return {
       id: entry.id,
       sequenceNumber: entry.sequenceNumber,
+      tournamentEntryNumber: entry.tournamentEntryNumber,
+      entryFee: entry.entryFee,
+      prizePoolBeforeEntry: entry.prizePoolBeforeEntry,
+      prizePoolContribution: entry.prizePoolContribution,
+      platformAllocation: entry.platformAllocation,
+      futureRewardAllocation: entry.futureRewardAllocation,
+      rakebackAmount: entry.rakebackAmount,
+      baseBankrollSnapshot: entry.baseBankrollSnapshot,
       startingBankroll: entry.startingBankroll,
       cash: entry.cash,
       equity: entry.currentEquity,
@@ -393,14 +502,14 @@ export class TradingApiService {
     };
   }
 
-  async execute(request: MarketOrderRequest) {
-    const result = await executeMarketOrder(this.db, this.market, request);
+  async execute(request: TradingOrderRequest) {
+    const result = await submitTradingOrder(this.db, this.market, request);
     const [entry] = await this.db
       .select({ tournamentId: tournamentEntries.tournamentId })
       .from(tournamentEntries)
       .where(eq(tournamentEntries.id, request.entryId));
     const snapshot = await this.snapshots.get(request.entryId);
-    if (!result.replayed) {
+    if (!result.replayed && result.order.status === 'FILLED') {
       if (entry) await this.leaderboards.refreshEntry(entry.tournamentId, request.entryId);
       this.events.publish(`entry:${request.entryId}`, {
         type: 'entry.account_updated',
@@ -413,6 +522,42 @@ export class TradingApiService {
       });
     }
     return { ...result, account: snapshot };
+  }
+
+  async processMarketTick(symbol: MarketSymbol) {
+    const results = await processConditionalOrders(this.db, this.market, symbol);
+    for (const result of results) {
+      const [entry] = await this.db
+        .select({ tournamentId: tournamentEntries.tournamentId })
+        .from(tournamentEntries)
+        .where(eq(tournamentEntries.id, result.order.entryId));
+      const snapshot = await this.snapshots.get(result.order.entryId);
+      if (entry) await this.leaderboards.refreshEntry(entry.tournamentId, result.order.entryId);
+      this.events.publish(`entry:${result.order.entryId}`, {
+        type: 'entry.account_updated',
+        entryId: result.order.entryId,
+        cash: snapshot.cash,
+        realizedPnL: snapshot.realizedPnL,
+        unrealizedPnL: snapshot.unrealizedPnL,
+        equity: snapshot.equity,
+        score: snapshot.score,
+      });
+    }
+    return results;
+  }
+
+  async cancel(entryId: string, orderId: string) {
+    return cancelTradingOrder(this.db, entryId, orderId);
+  }
+
+  async protect(input: {
+    entryId: string;
+    symbol: string;
+    takeProfitPrice: string | null;
+    stopLossPrice: string | null;
+    idempotencyKey: string;
+  }) {
+    return setPositionProtection(this.db, this.market, input);
   }
 }
 
@@ -468,8 +613,18 @@ export class EntryReadService {
         return {
           id: entry.id,
           sequenceNumber: entry.sequenceNumber,
+          tournamentEntryNumber: entry.tournamentEntryNumber,
+          entryFee: entry.entryFee,
+          prizePoolBeforeEntry: entry.prizePoolBeforeEntry,
+          prizePoolContribution: entry.prizePoolContribution,
+          platformAllocation: entry.platformAllocation,
+          futureRewardAllocation: entry.futureRewardAllocation,
+          rakebackAmount: entry.rakebackAmount,
+          baseBankrollSnapshot: entry.baseBankrollSnapshot,
           startingBankroll: entry.startingBankroll,
           cash: snapshot.cash,
+          availableBuyingPower: snapshot.availableBuyingPower,
+          positionValue: snapshot.positionValue,
           realizedPnL: snapshot.realizedPnL,
           unrealizedPnL: snapshot.unrealizedPnL,
           equity: snapshot.equity,
@@ -488,7 +643,18 @@ export class EntryReadService {
             id: tournament.id,
             slug: tournament.slug,
             name: tournament.name,
-            status: tournament.status,
+            status: scheduledTournamentStatus(
+              tournament.status,
+              {
+                registrationOpensAt: tournament.registrationOpensAt,
+                tradingStartsAt: tournament.tradingStartsAt,
+                entryClosesAt: tournament.entryClosesAt,
+                tradingClosesAt: tournament.tradingClosesAt,
+              },
+              new Date(),
+            ),
+            registrationOpensAt: tournament.registrationOpensAt,
+            tradingStartsAt: tournament.tradingStartsAt,
             entryClosesAt: tournament.entryClosesAt,
             tradingClosesAt: tournament.tradingClosesAt,
           },
@@ -518,13 +684,34 @@ export class EntryReadService {
         id: row.tournament.id,
         slug: row.tournament.slug,
         name: row.tournament.name,
-        status: row.tournament.status,
+        status: scheduledTournamentStatus(
+          row.tournament.status,
+          {
+            registrationOpensAt: row.tournament.registrationOpensAt,
+            tradingStartsAt: row.tournament.tradingStartsAt,
+            entryClosesAt: row.tournament.entryClosesAt,
+            tradingClosesAt: row.tournament.tradingClosesAt,
+          },
+          new Date(),
+        ),
+        registrationOpensAt: row.tournament.registrationOpensAt,
+        tradingStartsAt: row.tournament.tradingStartsAt,
         entryClosesAt: row.tournament.entryClosesAt,
         tradingClosesAt: row.tournament.tradingClosesAt,
       },
       sequenceNumber: row.entry.sequenceNumber,
+      tournamentEntryNumber: row.entry.tournamentEntryNumber,
+      entryFee: row.entry.entryFee,
+      prizePoolBeforeEntry: row.entry.prizePoolBeforeEntry,
+      prizePoolContribution: row.entry.prizePoolContribution,
+      platformAllocation: row.entry.platformAllocation,
+      futureRewardAllocation: row.entry.futureRewardAllocation,
+      rakebackAmount: row.entry.rakebackAmount,
+      baseBankrollSnapshot: row.entry.baseBankrollSnapshot,
       startingBankroll: row.entry.startingBankroll,
       cash: snapshot.cash,
+      availableBuyingPower: snapshot.availableBuyingPower,
+      positionValue: snapshot.positionValue,
       realizedPnL: snapshot.realizedPnL,
       unrealizedPnL: snapshot.unrealizedPnL,
       equity: snapshot.equity,
@@ -565,10 +752,18 @@ export class EntryReadService {
         status: order.status,
         symbol: order.symbol,
         side: order.side,
+        positionSide: order.positionSide,
+        intent: order.intent,
+        orderType: order.orderType,
         requestedNotional: order.requestedNotional,
         requestedQuantity: order.requestedQuantity,
         requestedPercentageBps: order.requestedPercentageBps,
+        limitPrice: order.limitPrice,
+        triggerPrice: order.triggerPrice,
+        rejectionReason: order.rejectionReason,
+        cancellationReason: order.cancellationReason,
         createdAt: order.createdAt,
+        updatedAt: order.updatedAt,
         fill: fill
           ? {
               id: fill.id,
@@ -580,10 +775,105 @@ export class EntryReadService {
               spread: fill.spreadAmount,
               slippage: fill.slippageAmount,
               fee: fill.feeAmount,
+              realizedPnL: fill.realizedPnL,
             }
           : null,
       })),
       pagination: pageMetadata(pagination.page, pagination.pageSize, Number(total)),
+    };
+  }
+
+  async fills(entryId: string, pagination: Pagination) {
+    const [{ total }] = await this.db
+      .select({ total: count() })
+      .from(fills)
+      .where(eq(fills.entryId, entryId));
+    const rows = await this.db
+      .select({ fill: fills, order: orders })
+      .from(fills)
+      .innerJoin(orders, eq(orders.id, fills.orderId))
+      .where(eq(fills.entryId, entryId))
+      .orderBy(desc(fills.executionSequence))
+      .limit(pagination.pageSize)
+      .offset((pagination.page - 1) * pagination.pageSize);
+    return {
+      data: rows.map(({ fill, order }) => ({
+        id: fill.id,
+        orderId: order.id,
+        timestamp: fill.serverTimestamp,
+        symbol: fill.symbol,
+        side: fill.side,
+        positionSide: fill.positionSide,
+        intent: fill.intent,
+        referencePrice: fill.referencePrice,
+        fillPrice: fill.fillPrice,
+        quantity: fill.quantity,
+        notional: fill.notional,
+        spread: fill.spreadAmount,
+        slippage: fill.slippageAmount,
+        fee: fill.feeAmount,
+        realizedPnL: fill.realizedPnL,
+      })),
+      pagination: pageMetadata(pagination.page, pagination.pageSize, Number(total)),
+    };
+  }
+
+  async performance(entryId: string) {
+    const snapshot = await this.snapshots.get(entryId);
+    const closeFills = await this.db
+      .select({ realizedPnL: fills.realizedPnL })
+      .from(fills)
+      .where(and(eq(fills.entryId, entryId), eq(fills.intent, 'CLOSE')));
+    const realized = closeFills.map((fill) => parseSignedMoney(fill.realizedPnL));
+    const winners = realized.filter((value) => value > 0n);
+    const losers = realized.filter((value) => value < 0n);
+    const winnerTotal = winners.reduce((sum, value) => sum + value, 0n);
+    const loserTotal = losers.reduce((sum, value) => sum + -value, 0n);
+    const average = (values: bigint[], total: bigint) =>
+      values.length
+        ? signedMoneyToString(moneyFromMinorUnits(total / BigInt(values.length)))
+        : null;
+    const ratio =
+      loserTotal > 0n
+        ? `${winnerTotal / loserTotal}.${(((winnerTotal % loserTotal) * 100n) / loserTotal)
+            .toString()
+            .padStart(2, '0')}`
+        : null;
+    return {
+      currentPnL: snapshot.score,
+      returnPercentage: signedMoneyToString(
+        moneyFromMinorUnits(
+          divideRoundHalfUp(
+            parseSignedMoney(snapshot.score) * 10_000n,
+            parseMoney(snapshot.startingBankroll),
+          ),
+        ),
+      ),
+      realizedPnL: snapshot.realizedPnL,
+      unrealizedPnL: snapshot.unrealizedPnL,
+      maxDrawdown: null,
+      numberOfTrades: closeFills.length,
+      winRatePercentage:
+        closeFills.length > 0
+          ? signedMoneyToString(
+              moneyFromMinorUnits(
+                divideRoundHalfUp(BigInt(winners.length) * 10_000n, BigInt(closeFills.length)),
+              ),
+            )
+          : null,
+      averageWinner: average(winners, winnerTotal),
+      averageLoser: average(losers, -loserTotal),
+      largestWinner: winners.length
+        ? signedMoneyToString(
+            moneyFromMinorUnits(winners.reduce((best, value) => (value > best ? value : best))),
+          )
+        : null,
+      largestLoser: losers.length
+        ? signedMoneyToString(
+            moneyFromMinorUnits(losers.reduce((worst, value) => (value < worst ? value : worst))),
+          )
+        : null,
+      profitFactor: ratio,
     };
   }
 }

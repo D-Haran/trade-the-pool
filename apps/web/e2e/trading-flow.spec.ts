@@ -9,6 +9,12 @@ let page: Page;
 let firstEntryId = '';
 let secondEntryId = '';
 
+async function selectMarket(label: 'BTC/USD' | 'ETH/USD' | 'SOL/USD') {
+  await page.locator('.market-selector-trigger').click();
+  await page.locator('.market-picker button').filter({ hasText: label }).click();
+  await expect(page.locator('.market-selector-trigger')).toContainText(label);
+}
+
 test.describe.serial('authoritative trading journey', () => {
   test.beforeAll(async ({ browser }) => {
     context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
@@ -36,11 +42,17 @@ test.describe.serial('authoritative trading journey', () => {
     await expect(page.getByText('$0.00').first()).toBeVisible();
     await expect(page.getByText('Base bankroll', { exact: true }).first()).toBeVisible();
     await expect(page.getByText('Enter now with', { exact: true })).toBeVisible();
+    await expect(page.getByText('Entry now', { exact: true }).first()).toBeVisible();
+    await expect(page.locator('.entry-panel')).toContainText('$30.00');
+    await expect(page.locator('.payout-grid')).toContainText('1st Prize');
+    await expect(page.locator('.payout-grid')).toContainText('$0.00');
     await page.getByRole('button', { name: 'Create entry' }).click();
     await expect(page.getByText('Entry #1 created')).toBeVisible();
     await expect(page.locator('.entry-confirmation')).toContainText('Locked starting bankroll');
     await expect(page.locator('.entry-confirmation')).toContainText('$10,000.00');
     await expect(page.locator('.entry-confirmation')).toContainText('Current prize pool $25.00');
+    await expect(page.locator('.entry-confirmation')).toContainText('Entry price locked at $30.00');
+    await expect(page.locator('.payout-grid')).toContainText('$12.50');
     const href = await page.getByRole('link', { name: /Open terminal/ }).getAttribute('href');
     firstEntryId = href!.split('/').at(-1)!;
     await page.getByRole('link', { name: /Open terminal/ }).click();
@@ -49,32 +61,91 @@ test.describe.serial('authoritative trading journey', () => {
     );
   });
 
-  test('buys, marks the account through realtime, and sells the position', async () => {
+  test('trades long and short, manages risk, and exercises chart and pending-order controls', async () => {
+    await page.request.post(`${apiUrl}/v1/dev/market/advance`, {
+      data: { symbol: 'ETH-USD', price: '4000.00' },
+    });
+    await selectMarket('ETH/USD');
+    await page.getByLabel('Simulated order notional in USD').fill('1000.00');
+    await page.getByRole('button', { name: /Take Profit \/ Stop Loss/ }).click();
+    await page.getByLabel('TAKE PROFIT').fill('4200.00');
+    await page.getByLabel('STOP LOSS').fill('3900.00');
+    await page.getByRole('button', { name: 'Place LONG order' }).click();
+    await page.getByRole('button', { name: 'Confirm LONG ETH' }).click();
+    await expect(page.getByText('LONG ETH FILLED')).toBeVisible();
+    await expect(page.locator('.terminal-table--positions')).toContainText('ETH/USD');
+    await expect(page.locator('.terminal-table--positions')).toContainText('LONG');
+
+    await page.request.post(`${apiUrl}/v1/dev/market/advance`, {
+      data: { symbol: 'ETH-USD', price: '4100.00' },
+    });
+    await expect(page.locator('.terminal-table--positions .positive').first()).toBeVisible();
+
+    page.once('dialog', (dialog) => dialog.accept());
+    await page
+      .locator('.terminal-table--positions .terminal-table__row')
+      .filter({ hasText: 'ETH/USD' })
+      .getByRole('button', { name: '25%' })
+      .click();
+    await expect(page.getByText('LONG ETH FILLED')).toBeVisible();
+
     await page.request.post(`${apiUrl}/v1/dev/market/advance`, {
       data: { symbol: 'BTC-USD', price: '100000.00' },
     });
-    await page.getByLabel('Buy notional in USD').fill('1000.00');
-    await page.getByRole('button', { name: 'Buy BTC' }).click();
-    await expect(page.getByText(/Bought .* BTC/).first()).toBeVisible();
-    await expect(page.getByText('BTC/USD').last()).toBeVisible();
+    await selectMarket('BTC/USD');
+    await page.getByRole('button', { name: 'Limit', exact: true }).click();
+    await page.getByLabel('Simulated order notional in USD').fill('500.00');
+    await page.getByLabel('Limit price').fill('90000.00');
+    await page.getByRole('button', { name: 'Create LONG order' }).click();
+    await page.getByRole('button', { name: 'Confirm LONG BTC' }).click();
+    await expect(page.getByText('LONG BTC/USD order open')).toBeVisible();
+    await page.getByRole('button', { name: /Open Orders/ }).click();
+    const limitRow = page
+      .locator('.terminal-table--orders .terminal-table__row')
+      .filter({ hasText: 'BTC/USD' });
+    await expect(limitRow).toContainText('LIMIT');
+    await limitRow.getByRole('button', { name: 'Cancel' }).click();
+    await expect(page.getByText('Order cancelled')).toBeVisible();
 
-    await page.request.post(`${apiUrl}/v1/dev/market/advance`, {
-      data: { symbol: 'BTC-USD', price: '110000.00' },
-    });
-    await expect(page.locator('.rank-score .positive').first()).toBeVisible();
+    await Promise.all([
+      page.request.post(`${apiUrl}/v1/dev/market/advance`, {
+        data: { symbol: 'ETH-USD', price: '4100.00' },
+      }),
+      page.request.post(`${apiUrl}/v1/dev/market/advance`, {
+        data: { symbol: 'SOL-USD', price: '200.00' },
+      }),
+    ]);
+    await selectMarket('SOL/USD');
+    await page.getByRole('button', { name: '4h', exact: true }).click();
+    await page.getByRole('button', { name: 'Line chart' }).click();
+    await page.getByRole('button', { name: /Indicators/ }).click();
+    await page.getByLabel('SMA period').fill('25');
+    await page.getByText('RSI', { exact: true }).click();
+    await expect(page.getByText(/VWAP and Volume are hidden/)).toBeVisible();
+    await page.getByRole('button', { name: 'Close indicators' }).click();
 
-    await page.getByRole('button', { name: 'Sell' }).click();
-    await page.getByRole('button', { name: 'Close' }).click();
-    await page.getByRole('button', { name: 'Sell BTC' }).click();
-    await expect(page.getByText(/Sold .* BTC/).first()).toBeVisible();
-    await page.getByRole('button', { name: /Orders/ }).click();
-    await expect(page.locator('.orders-table .data-table__row')).toHaveCount(2);
+    await page.getByRole('button', { name: /SHORT S/ }).click();
+    await page.getByRole('button', { name: 'Market', exact: true }).click();
+    await page.getByLabel('Simulated order notional in USD').fill('500.00');
+    await page.getByRole('button', { name: 'Place SHORT order' }).click();
+    await page.getByRole('button', { name: 'Confirm SHORT SOL' }).click();
+    await expect(page.getByText('SHORT SOL FILLED')).toBeVisible();
+    await page.getByRole('button', { name: 'Positions', exact: true }).click();
+    await expect(page.locator('.terminal-table--positions')).toContainText('SHORT');
+
+    await page.reload();
+    await expect(page.locator('.market-selector-trigger')).toContainText('SOL/USD');
+    await expect(page.getByRole('button', { name: '4h', exact: true })).toHaveClass(/is-active/);
+    await expect(page.getByRole('button', { name: 'Line chart' })).toHaveClass(/is-active/);
   });
 
   test('keeps multiple entries isolated during active-entry switching', async () => {
     await page.goto(`/tournaments/${E2E.slug}`);
     await page.getByRole('button', { name: 'Create entry' }).click();
     await expect(page.getByText('Entry #2 created')).toBeVisible();
+    await expect(page.locator('.entry-confirmation')).toContainText('$10,025.00');
+    await expect(page.locator('.entry-confirmation')).toContainText('Entry price locked at $40.00');
+    await expect(page.locator('.entry-confirmation')).toContainText('Current prize pool $55.00');
     const href = await page.getByRole('link', { name: /Open terminal/ }).getAttribute('href');
     secondEntryId = href!.split('/').at(-1)!;
     await page.getByRole('link', { name: /Open terminal/ }).click();
@@ -83,14 +154,59 @@ test.describe.serial('authoritative trading journey', () => {
       .getByRole('combobox', { name: 'Active tournament entry' })
       .selectOption(firstEntryId);
     await expect(page).toHaveURL(new RegExp(firstEntryId));
-    await page.getByRole('button', { name: /Orders/ }).click();
-    await expect(page.locator('.orders-table .data-table__row')).toHaveCount(2);
+    await page.getByRole('button', { name: 'Positions', exact: true }).click();
+    await expect(page.locator('.terminal-table--positions')).toContainText('ETH/USD');
+    await expect(page.locator('.terminal-table--positions')).toContainText('SOL/USD');
     await page
       .getByRole('combobox', { name: 'Active tournament entry' })
       .selectOption(secondEntryId);
     await expect(page).toHaveURL(new RegExp(secondEntryId));
-    await page.getByRole('button', { name: /Orders/ }).click();
-    await expect(page.getByText('No order history')).toBeVisible();
+    await page.getByRole('button', { name: 'Positions', exact: true }).click();
+    await expect(page.getByText('No open positions')).toBeVisible();
+    await expect(page.locator('.terminal-account-strip')).toContainText('$10,025.00');
+    await page
+      .getByRole('combobox', { name: 'Active tournament entry' })
+      .selectOption(firstEntryId);
+    await expect(page.locator('.terminal-account-strip')).toContainText('$10,000.00');
+    await expect(page.locator('.tournament-metrics')).toContainText('$55.00');
+  });
+
+  test('enforces scheduled trading start and independent entry/trading close boundaries', async () => {
+    const sql = postgres(databaseUrl);
+    await sql`
+      UPDATE tournaments SET trading_starts_at = now() + interval '30 minutes',
+        entry_closes_at = now() + interval '1 hour', trading_closes_at = now() + interval '2 hours'
+      WHERE id = ${E2E.tournamentId}
+    `;
+    await page.goto(`/tournaments/${E2E.slug}/trade/${firstEntryId}`);
+    await expect(page.locator('.professional-submit')).toBeDisabled();
+    const early = await page.request.post(`${apiUrl}/v1/orders`, {
+      headers: { 'Idempotency-Key': 'e2e-before-trading-start' },
+      data: { entryId: firstEntryId, symbol: 'BTC-USD', side: 'BUY', notional: '1.00' },
+    });
+    expect(early.status()).toBe(409);
+    expect((await early.json()).error.code).toBe('TRADING_NOT_STARTED');
+
+    await sql`
+      UPDATE tournaments SET trading_starts_at = now() - interval '1 hour',
+        entry_closes_at = now() - interval '1 second', trading_closes_at = now() + interval '1 hour'
+      WHERE id = ${E2E.tournamentId}
+    `;
+    await page.goto(`/tournaments/${E2E.slug}`);
+    await expect(page.getByRole('button', { name: 'Entry unavailable' })).toBeDisabled();
+    const closedEntry = await page.request.post(
+      `${apiUrl}/v1/tournaments/${E2E.tournamentId}/entries`,
+      { data: {} },
+    );
+    expect(closedEntry.status()).toBe(409);
+    await page.goto(`/tournaments/${E2E.slug}/trade/${firstEntryId}`);
+    await expect(page.locator('.professional-submit')).toBeEnabled();
+    await sql`
+      UPDATE tournaments SET trading_starts_at = now() - interval '1 hour',
+        entry_closes_at = now() + interval '1 day', trading_closes_at = now() + interval '2 days'
+      WHERE id = ${E2E.tournamentId}
+    `;
+    await sql.end();
   });
 
   test('blocks access to another user private entry', async () => {
@@ -105,26 +221,71 @@ test.describe.serial('authoritative trading journey', () => {
 
   test('disables trading at the authoritative tournament close', async () => {
     const sql = postgres(databaseUrl);
-    await sql`UPDATE tournaments SET trading_closes_at = now() - interval '1 second' WHERE id = ${E2E.tournamentId}`;
+    await sql`UPDATE tournaments SET entry_closes_at = now() - interval '2 seconds', trading_closes_at = now() - interval '1 second' WHERE id = ${E2E.tournamentId}`;
     await page.goto(`/tournaments/${E2E.slug}/trade/${firstEntryId}`);
-    await expect(page.getByRole('button', { name: 'Buy BTC' })).toBeDisabled();
+    await expect(page.locator('.professional-submit')).toBeDisabled();
     const response = await page.request.post(`${apiUrl}/v1/orders`, {
       headers: { 'Idempotency-Key': 'e2e-closed-order' },
       data: { entryId: firstEntryId, symbol: 'BTC-USD', side: 'BUY', notional: '1.00' },
     });
     expect(response.status()).toBe(409);
-    await sql`UPDATE tournaments SET trading_closes_at = now() + interval '2 days' WHERE id = ${E2E.tournamentId}`;
+    await sql`UPDATE tournaments SET entry_closes_at = now() + interval '1 day', trading_closes_at = now() + interval '2 days' WHERE id = ${E2E.tournamentId}`;
     await sql.end();
   });
 
   test('recovers and resynchronizes after a network reconnect', async () => {
     await page.goto(`/tournaments/${E2E.slug}/trade/${firstEntryId}`);
+    await Promise.all([
+      page.request.post(`${apiUrl}/v1/dev/market/advance`, {
+        data: { symbol: 'ETH-USD', price: '4100.00' },
+      }),
+      page.request.post(`${apiUrl}/v1/dev/market/advance`, {
+        data: { symbol: 'SOL-USD', price: '200.00' },
+      }),
+    ]);
+    await page.reload();
+    await expect(page.getByText('LIVE', { exact: true })).toBeVisible();
     await context.setOffline(true);
     await page.evaluate(() => window.dispatchEvent(new Event('offline')));
     await expect(page.getByText(/Realtime connection degraded|reconnect/i).first()).toBeVisible();
     await context.setOffline(false);
     await page.evaluate(() => window.dispatchEvent(new Event('online')));
-    await expect(page.getByText('Live', { exact: true })).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText('LIVE', { exact: true })).toBeVisible({ timeout: 20_000 });
+  });
+
+  test('preserves terminal hierarchy without page overflow across target viewports', async () => {
+    const viewports = [
+      { width: 1920, height: 1080, stacked: false },
+      { width: 1440, height: 900, stacked: false },
+      { width: 1024, height: 768, stacked: false },
+      { width: 820, height: 1024, stacked: true },
+      { width: 390, height: 844, stacked: true },
+    ];
+    for (const viewport of viewports) {
+      await page.setViewportSize(viewport);
+      await page.goto(`/tournaments/${E2E.slug}/trade/${firstEntryId}`);
+      await expect(page.locator('.professional-terminal-grid')).toBeVisible();
+      const layout = await page.evaluate(() => {
+        const chart = document.querySelector('.chart-workspace')!.getBoundingClientRect();
+        const ticket = document
+          .querySelector('.professional-order-ticket')!
+          .getBoundingClientRect();
+        return {
+          innerWidth,
+          scrollWidth: document.documentElement.scrollWidth,
+          chart: { left: chart.left, top: chart.top, bottom: chart.bottom },
+          ticket: { left: ticket.left, top: ticket.top },
+        };
+      });
+      expect(layout.scrollWidth).toBeLessThanOrEqual(layout.innerWidth + 1);
+      if (viewport.stacked)
+        expect(layout.ticket.top).toBeGreaterThanOrEqual(layout.chart.bottom - 1);
+      else {
+        expect(Math.abs(layout.ticket.top - layout.chart.top)).toBeLessThanOrEqual(1);
+        expect(layout.ticket.left).toBeGreaterThan(layout.chart.left);
+      }
+    }
+    await page.setViewportSize({ width: 1440, height: 1000 });
   });
 
   test('captures high-value desktop and mobile layouts', async ({ browserName }) => {
@@ -141,10 +302,20 @@ test.describe.serial('authoritative trading journey', () => {
       mask: [page.locator('.entry-panel__deadline .tabular'), page.locator('.entry-panel__times')],
       maskColor: '#0b1014',
     });
+    await Promise.all([
+      page.request.post(`${apiUrl}/v1/dev/market/advance`, {
+        data: { symbol: 'ETH-USD', price: '4100.00' },
+      }),
+      page.request.post(`${apiUrl}/v1/dev/market/advance`, {
+        data: { symbol: 'SOL-USD', price: '200.00' },
+      }),
+    ]);
     await page.goto(`/tournaments/${E2E.slug}/trade/${firstEntryId}`);
+    await expect(page.getByText('LIVE', { exact: true })).toBeVisible({ timeout: 20_000 });
     const terminalMask = [
       page.locator('.market-chart'),
-      page.locator('.terminal-deadline .tabular'),
+      page.locator('.terminal-close-time'),
+      page.locator('.market-freshness'),
     ];
     await expect(page).toHaveScreenshot('terminal-desktop.png', {
       fullPage: true,

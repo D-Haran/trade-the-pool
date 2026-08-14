@@ -4,7 +4,10 @@ import {
   type RealtimeEvent,
 } from '@trade-the-pool/shared';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import type { ObservableMarketPriceProvider } from '@trade-the-pool/market-data';
+import type {
+  MarketPriceProvider,
+  ObservableMarketPriceProvider,
+} from '@trade-the-pool/market-data';
 import { requireUser } from './auth.js';
 import type { AuthorizationService } from './authorization.js';
 import { normalizeError } from './errors.js';
@@ -139,6 +142,8 @@ export function connectMarketRealtime(
   market: ObservableMarketPriceProvider,
   hub: RealtimeHub,
   leaderboards: LeaderboardService,
+  processOrders:
+    ((symbol: Parameters<MarketPriceProvider['getSnapshot']>[0]) => Promise<unknown>) | null = null,
   onError: (error: unknown) => void = () => undefined,
 ): () => void {
   return market.subscribe((snapshot) => {
@@ -149,6 +154,9 @@ export function connectMarketRealtime(
       marketTimestamp: snapshot.marketTimestamp.toISOString(),
       source: snapshot.source,
     });
-    void leaderboards.refreshSymbol(snapshot.symbol).catch(onError);
+    void (async () => {
+      if (processOrders) await processOrders(snapshot.symbol);
+      await leaderboards.refreshSymbol(snapshot.symbol);
+    })().catch(onError);
   });
 }

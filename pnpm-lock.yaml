@@ -191,6 +191,25 @@ importers:
         specifier: ^3.24.1
         version: 3.25.76
 
+  packages/simulator:
+    dependencies:
+      '@trade-the-pool/market-data':
+        specifier: workspace:*
+        version: link:../market-data
+      '@trade-the-pool/shared':
+        specifier: workspace:*
+        version: link:../shared
+      '@trade-the-pool/trading-engine':
+        specifier: workspace:*
+        version: link:../trading-engine
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.2
+        version: 22.20.1
+      tsx:
+        specifier: ^4.19.2
+        version: 4.23.12
+
   packages/trading-engine:
     dependencies:
       '@trade-the-pool/database':

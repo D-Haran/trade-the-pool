@@ -4,6 +4,7 @@ import type {
   CandleIntervalDto,
   EntryDetailDto,
   EntrySummaryDto,
+  FillHistoryDto,
   LeaderboardPageDto,
   MarketCandleDto,
   MarketSnapshotDto,
@@ -11,6 +12,8 @@ import type {
   OrderHistoryDto,
   OrderRequestDto,
   OrderResultDto,
+  PerformanceDto,
+  PositionProtectionRequestDto,
   Page,
   PositionDto,
   TournamentDto,
@@ -64,6 +67,14 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 export type CreatedEntryDto = {
   id: string;
   sequenceNumber: number;
+  tournamentEntryNumber: number;
+  entryFee: string;
+  prizePoolBeforeEntry: string;
+  prizePoolContribution: string;
+  platformAllocation: string;
+  futureRewardAllocation: string;
+  rakebackAmount: string;
+  baseBankrollSnapshot: string;
   startingBankroll: string;
   cash: string;
   equity: string;
@@ -101,7 +112,11 @@ export const api = {
   positions: (entryId: string) =>
     request<ApiEnvelope<PositionDto[]>>(`/v1/entries/${entryId}/positions`),
   orders: (entryId: string, page = 1) =>
-    request<Page<OrderHistoryDto>>(`/v1/entries/${entryId}/orders?page=${page}&pageSize=25`),
+    request<Page<OrderHistoryDto>>(`/v1/entries/${entryId}/orders?page=${page}&pageSize=100`),
+  fills: (entryId: string, page = 1) =>
+    request<Page<FillHistoryDto>>(`/v1/entries/${entryId}/fills?page=${page}&pageSize=100`),
+  performance: (entryId: string) =>
+    request<ApiEnvelope<PerformanceDto>>(`/v1/entries/${entryId}/performance`),
   leaderboard: (tournamentId: string, page = 1) =>
     request<LeaderboardPageDto>(
       `/v1/tournaments/${tournamentId}/leaderboard?page=${page}&pageSize=50`,
@@ -115,6 +130,31 @@ export const api = {
   order: (body: OrderRequestDto, idempotencyKey: string) =>
     request<ApiEnvelope<OrderResultDto>>('/v1/orders', {
       method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify(body),
+    }),
+  cancelOrder: (entryId: string, orderId: string) =>
+    request<ApiEnvelope<{ id: string; status: 'CANCELLED' }>>(
+      `/v1/entries/${entryId}/orders/${orderId}`,
+      { method: 'DELETE' },
+    ),
+  setProtection: (
+    entryId: string,
+    symbol: MarketSymbolDto,
+    body: PositionProtectionRequestDto,
+    idempotencyKey: string,
+  ) =>
+    request<
+      ApiEnvelope<
+        Array<{
+          id: string;
+          type: 'TAKE_PROFIT' | 'STOP_LOSS';
+          triggerPrice: string;
+          status: 'OPEN';
+        }>
+      >
+    >(`/v1/entries/${entryId}/positions/${symbol}/protection`, {
+      method: 'PUT',
       headers: { 'Idempotency-Key': idempotencyKey },
       body: JSON.stringify(body),
     }),

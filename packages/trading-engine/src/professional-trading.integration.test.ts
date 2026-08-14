@@ -1,0 +1,352 @@
+import { afterAll, describe, expect, it } from 'vitest';
+import { createDatabase } from '@trade-the-pool/database';
+import { DeterministicMarketPriceSource } from '@trade-the-pool/market-data';
+import {
+  createTournamentEntry,
+  getAccountSummary,
+  processConditionalOrders,
+  setPositionProtection,
+  submitTradingOrder,
+} from './index.js';
+
+const connection = createDatabase(
+  process.env.DATABASE_URL ??
+    'postgres://trade_the_pool:trade_the_pool@localhost:5432/trade_the_pool',
+);
+const { client, db } = connection;
+
+async function fixture<T>(
+  run: (input: {
+    entryId: string;
+    tournamentId: string;
+    market: DeterministicMarketPriceSource;
+    now: Date;
+  }) => Promise<T>,
+): Promise<T> {
+  const suffix = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const [user] = await client`
+    INSERT INTO users (display_name) VALUES (${`Professional trader ${suffix}`}) RETURNING id
+  `;
+  const [tournament] = await client`
+    INSERT INTO tournaments
+      (slug, name, description, status, base_bankroll, current_prize_pool,
+       registration_opens_at, trading_starts_at, entry_closes_at, trading_closes_at,
+       max_entries_per_user, payout_config)
+    VALUES
+      (${`professional-${suffix}`}, 'Professional trading', 'Professional order fixture',
+       'TRADING_ACTIVE', 10000.00, 0.00, now() - interval '2 hours', now() - interval '1 hour',
+       now() + interval '1 hour', now() + interval '2 hours', 1,
+       ${JSON.stringify({ directPrizes: [{ position: 1, basisPoints: 10000 }] })})
+    RETURNING id
+  `;
+  await client`
+    INSERT INTO tournament_entry_fee_tiers
+      (tournament_id, ordinal, min_prize_pool, max_prize_pool, entry_fee,
+       prize_pool_contribution, platform_fee, future_reward_allocation)
+    VALUES (${tournament.id}, 0, 0.00, NULL, 0.00, 0.00, 0.00, 0.00)
+  `;
+  const entry = await createTournamentEntry(db, tournament.id, user.id);
+  const now = new Date();
+  const market = new DeterministicMarketPriceSource(now);
+  try {
+    return await run({ entryId: entry.id, tournamentId: tournament.id, market, now });
+  } finally {
+    await client`DELETE FROM account_ledger_entries WHERE entry_id = ${entry.id}`;
+    await client`DELETE FROM fills WHERE entry_id = ${entry.id}`;
+    await client`DELETE FROM positions WHERE entry_id = ${entry.id}`;
+    await client`DELETE FROM orders WHERE entry_id = ${entry.id}`;
+    await client`DELETE FROM tournament_entries WHERE id = ${entry.id}`;
+    await client`DELETE FROM tournament_entry_fee_tiers WHERE tournament_id = ${tournament.id}`;
+    await client`DELETE FROM tournaments WHERE id = ${tournament.id}`;
+    await client`DELETE FROM users WHERE id = ${user.id}`;
+  }
+}
+
+describe('professional trading orders', () => {
+  it('opens, marks, partially closes, and fully closes a 1x short with exact accounting', async () => {
+    await fixture(async ({ entryId, market, now }) => {
+      const opened = await submitTradingOrder(
+        db,
+        market,
+        {
+          entryId,
+          symbol: 'ETH-USD',
+          positionSide: 'SHORT',
+          intent: 'OPEN',
+          orderType: 'MARKET',
+          requestedNotional: '1000.00',
+          idempotencyKey: 'short-open',
+        },
+        { now },
+      );
+      expect(opened.order).toMatchObject({ side: 'SELL', status: 'FILLED' });
+      expect(opened.fill?.realizedPnL).toBe('0.00');
+      const afterOpen = await getAccountSummary(db, market, entryId, { now });
+      expect(afterOpen.positions[0].side).toBe('SHORT');
+      expect(afterOpen.cash).toBe('10999.00');
+      expect(afterOpen.availableBuyingPower).toBe('8998.00');
+
+      const movedAt = new Date(now.getTime() + 1);
+      market.advancePrice('ETH-USD', '3800.00', movedAt);
+      const marked = await getAccountSummary(db, market, entryId, { now: movedAt });
+      expect(marked.unrealizedPnL.startsWith('-')).toBe(false);
+      expect(BigInt(marked.unrealizedPnL.replace('.', ''))).toBeGreaterThan(0n);
+
+      await submitTradingOrder(
+        db,
+        market,
+        {
+          entryId,
+          symbol: 'ETH-USD',
+          positionSide: 'SHORT',
+          intent: 'CLOSE',
+          orderType: 'MARKET',
+          percentageBps: 5_000,
+          idempotencyKey: 'short-half',
+        },
+        { now: movedAt },
+      );
+      await submitTradingOrder(
+        db,
+        market,
+        {
+          entryId,
+          symbol: 'ETH-USD',
+          positionSide: 'SHORT',
+          intent: 'CLOSE',
+          orderType: 'MARKET',
+          percentageBps: 10_000,
+          idempotencyKey: 'short-close',
+        },
+        { now: movedAt },
+      );
+      const closed = await getAccountSummary(db, market, entryId, { now: movedAt });
+      expect(closed.positions[0]).toMatchObject({ side: 'SHORT', quantity: '0.00000000' });
+      expect(BigInt(closed.realizedPnL.replace('.', ''))).toBeGreaterThan(0n);
+      expect(BigInt(closed.cash.replace('.', ''))).toBeGreaterThan(1_000_000n);
+    });
+  });
+
+  it('fills crossed limits from authoritative ticks and allows cancellation before a trigger', async () => {
+    await fixture(async ({ entryId, market, now }) => {
+      const pending = await submitTradingOrder(
+        db,
+        market,
+        {
+          entryId,
+          symbol: 'ETH-USD',
+          positionSide: 'LONG',
+          intent: 'OPEN',
+          orderType: 'LIMIT',
+          requestedNotional: '500.00',
+          limitPrice: '3900.00',
+          idempotencyKey: 'long-limit',
+        },
+        { now },
+      );
+      expect(pending.order.status).toBe('OPEN');
+      market.advancePrice('ETH-USD', '3850.00', new Date(now.getTime() + 1));
+      const fills = await processConditionalOrders(db, market, 'ETH-USD', {
+        now: new Date(now.getTime() + 1),
+      });
+      expect(fills).toHaveLength(1);
+      expect(fills[0].order.status).toBe('FILLED');
+      expect(
+        (await getAccountSummary(db, market, entryId, { now: new Date(now.getTime() + 1) }))
+          .positions[0].side,
+      ).toBe('LONG');
+    });
+  });
+
+  it('executes one attached exit and cancels its sibling without closing twice', async () => {
+    await fixture(async ({ entryId, market, now }) => {
+      await submitTradingOrder(
+        db,
+        market,
+        {
+          entryId,
+          symbol: 'ETH-USD',
+          positionSide: 'LONG',
+          intent: 'OPEN',
+          orderType: 'MARKET',
+          requestedNotional: '1000.00',
+          takeProfitPrice: '4100.00',
+          stopLossPrice: '3900.00',
+          idempotencyKey: 'protected-long',
+        },
+        { now },
+      );
+      const before = await client`
+        SELECT status, order_type FROM orders
+        WHERE entry_id = ${entryId} AND intent = 'CLOSE'
+        ORDER BY order_type
+      `;
+      expect(before).toEqual([
+        { status: 'OPEN', order_type: 'TAKE_PROFIT' },
+        { status: 'OPEN', order_type: 'STOP_LOSS' },
+      ]);
+
+      const movedAt = new Date(now.getTime() + 1);
+      market.advancePrice('ETH-USD', '4200.00', movedAt);
+      const triggered = await processConditionalOrders(db, market, 'ETH-USD', { now: movedAt });
+      expect(triggered).toHaveLength(1);
+      const summary = await getAccountSummary(db, market, entryId, { now: movedAt });
+      expect(summary.positions[0].quantity).toBe('0.00000000');
+      const after = await client`
+        SELECT status, count(*)::int AS count FROM orders
+        WHERE entry_id = ${entryId} AND intent = 'CLOSE'
+        GROUP BY status ORDER BY status
+      `;
+      expect(new Map(after.map((row) => [row.status, row.count]))).toEqual(
+        new Map([
+          ['CANCELLED', 1],
+          ['FILLED', 1],
+        ]),
+      );
+    });
+  });
+
+  it('expires pending orders at tournament close even when their trigger is not crossed', async () => {
+    await fixture(async ({ entryId, tournamentId, market, now }) => {
+      const pending = await submitTradingOrder(
+        db,
+        market,
+        {
+          entryId,
+          symbol: 'BTC-USD',
+          positionSide: 'LONG',
+          intent: 'OPEN',
+          orderType: 'LIMIT',
+          requestedNotional: '500.00',
+          limitPrice: '90000.00',
+          idempotencyKey: 'expire-at-close',
+        },
+        { now },
+      );
+      expect(pending.order.status).toBe('OPEN');
+      await client`
+        UPDATE tournaments
+        SET entry_closes_at = ${now.toISOString()},
+            trading_closes_at = ${new Date(now.getTime() + 1).toISOString()}
+        WHERE id = ${tournamentId}
+      `;
+      const closedAt = new Date(now.getTime() + 2);
+      market.advancePrice('BTC-USD', '100000.00', closedAt);
+      expect(await processConditionalOrders(db, market, 'BTC-USD', { now: closedAt })).toEqual([]);
+      const [expired] = await client`
+        SELECT status, cancellation_reason FROM orders WHERE id = ${pending.order.id}
+      `;
+      expect(expired).toEqual({
+        status: 'EXPIRED',
+        cancellation_reason: 'Tournament trading closed',
+      });
+    });
+  });
+
+  it('replays stop-loss-only protection updates and preserves unrelated close orders', async () => {
+    await fixture(async ({ entryId, market, now }) => {
+      await submitTradingOrder(
+        db,
+        market,
+        {
+          entryId,
+          symbol: 'ETH-USD',
+          positionSide: 'LONG',
+          intent: 'OPEN',
+          orderType: 'MARKET',
+          requestedNotional: '1000.00',
+          idempotencyKey: 'protection-position',
+        },
+        { now },
+      );
+      const manualClose = await submitTradingOrder(
+        db,
+        market,
+        {
+          entryId,
+          symbol: 'ETH-USD',
+          positionSide: 'LONG',
+          intent: 'CLOSE',
+          orderType: 'LIMIT',
+          percentageBps: 2_500,
+          limitPrice: '4500.00',
+          idempotencyKey: 'manual-quarter-close',
+        },
+        { now },
+      );
+      const first = await setPositionProtection(
+        db,
+        market,
+        {
+          entryId,
+          symbol: 'ETH-USD',
+          takeProfitPrice: null,
+          stopLossPrice: '3900.00',
+          idempotencyKey: 'stop-only-protection',
+        },
+        { now },
+      );
+      const replay = await setPositionProtection(
+        db,
+        market,
+        {
+          entryId,
+          symbol: 'ETH-USD',
+          takeProfitPrice: null,
+          stopLossPrice: '3900.00',
+          idempotencyKey: 'stop-only-protection',
+        },
+        { now },
+      );
+      expect(first).toHaveLength(1);
+      expect(replay.map((order) => order.id)).toEqual(first.map((order) => order.id));
+      const [preserved] = await client`
+        SELECT status FROM orders WHERE id = ${manualClose.order.id}
+      `;
+      expect(preserved.status).toBe('OPEN');
+    });
+  });
+
+  it('keeps stale positions readable while rejecting new execution', async () => {
+    await fixture(async ({ entryId, market, now }) => {
+      await submitTradingOrder(
+        db,
+        market,
+        {
+          entryId,
+          symbol: 'ETH-USD',
+          positionSide: 'LONG',
+          intent: 'OPEN',
+          orderType: 'MARKET',
+          requestedNotional: '500.00',
+          idempotencyKey: 'stale-readable-position',
+        },
+        { now },
+      );
+      const staleNow = new Date(now.getTime() + 30_001);
+      const readable = await getAccountSummary(db, market, entryId, { now: staleNow });
+      expect(readable.positions[0]).toMatchObject({
+        symbol: 'ETH-USD',
+        currentMark: '4000.00000000',
+      });
+      await expect(
+        submitTradingOrder(
+          db,
+          market,
+          {
+            entryId,
+            symbol: 'SOL-USD',
+            positionSide: 'LONG',
+            intent: 'OPEN',
+            orderType: 'MARKET',
+            requestedNotional: '100.00',
+            idempotencyKey: 'stale-execution-blocked',
+          },
+          { now: staleNow },
+        ),
+      ).rejects.toMatchObject({ code: 'STALE_MARKET_PRICE' });
+    });
+  });
+});
+
+afterAll(() => client.end());

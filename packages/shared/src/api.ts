@@ -7,7 +7,8 @@ export const decimalStringSchema = z.string().regex(/^\d+(?:\.\d{1,8})?$/);
 export const marketSymbolSchema = z.enum(['BTC-USD', 'ETH-USD', 'SOL-USD']);
 export const tournamentStatusSchema = z.enum([
   'DRAFT',
-  'OPEN',
+  'REGISTRATION_OPEN',
+  'TRADING_ACTIVE',
   'ENTRY_CLOSED',
   'TRADING_CLOSED',
   'FINALIZING',
@@ -27,7 +28,7 @@ const orderBase = {
   symbol: marketSymbolSchema,
 };
 
-export const orderRequestSchema = z.discriminatedUnion('side', [
+export const legacyOrderRequestSchema = z.discriminatedUnion('side', [
   z.object({ ...orderBase, side: z.literal('BUY'), notional: moneyStringSchema }).strict(),
   z
     .object({
@@ -45,6 +46,58 @@ export const orderRequestSchema = z.discriminatedUnion('side', [
     })
     .strict(),
 ]);
+
+export const positionSideSchema = z.enum(['LONG', 'SHORT']);
+export const orderIntentSchema = z.enum(['OPEN', 'CLOSE']);
+export const orderExecutionSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('MARKET') }).strict(),
+  z.object({ type: z.literal('LIMIT'), limitPrice: decimalStringSchema }).strict(),
+  z.object({ type: z.literal('STOP_MARKET'), stopPrice: decimalStringSchema }).strict(),
+]);
+const optionalProtection = {
+  takeProfitPrice: decimalStringSchema.nullable().optional(),
+  stopLossPrice: decimalStringSchema.nullable().optional(),
+};
+export const professionalOrderRequestSchema = z.discriminatedUnion('intent', [
+  z
+    .object({
+      ...orderBase,
+      intent: z.literal('OPEN'),
+      positionSide: positionSideSchema,
+      notional: moneyStringSchema,
+      execution: orderExecutionSchema,
+      ...optionalProtection,
+    })
+    .strict(),
+  z
+    .object({
+      ...orderBase,
+      intent: z.literal('CLOSE'),
+      positionSide: positionSideSchema,
+      amount: z.discriminatedUnion('type', [
+        z.object({ type: z.literal('QUANTITY'), quantity: decimalStringSchema }).strict(),
+        z
+          .object({
+            type: z.literal('PERCENTAGE'),
+            percentageBps: z.number().int().min(1).max(10_000),
+          })
+          .strict(),
+      ]),
+      execution: orderExecutionSchema,
+    })
+    .strict(),
+]);
+export const orderRequestSchema = z.union([
+  professionalOrderRequestSchema,
+  legacyOrderRequestSchema,
+]);
+
+export const positionProtectionRequestSchema = z
+  .object({
+    takeProfitPrice: decimalStringSchema.nullable(),
+    stopLossPrice: decimalStringSchema.nullable(),
+  })
+  .strict();
 
 export const realtimeSubscriptionSchema = z
   .object({
@@ -66,6 +119,7 @@ export const tournamentPrizePoolUpdatedEventSchema = z.object({
   tournamentId: uuidSchema,
   currentPrizePool: z.string(),
   newEntryBankroll: z.string(),
+  currentEntryPrice: z.string(),
   totalEntries: z.number().int().nonnegative(),
 });
 
@@ -100,6 +154,8 @@ export const realtimeEventSchema = z.discriminatedUnion('type', [
 ]);
 
 export type OrderRequestDto = z.infer<typeof orderRequestSchema>;
+export type ProfessionalOrderRequestDto = z.infer<typeof professionalOrderRequestSchema>;
+export type PositionProtectionRequestDto = z.infer<typeof positionProtectionRequestSchema>;
 export type RealtimeSubscription = z.infer<typeof realtimeSubscriptionSchema>;
 export type RealtimeEvent = z.infer<typeof realtimeEventSchema>;
 export type MarketSymbolDto = z.infer<typeof marketSymbolSchema>;
@@ -108,6 +164,29 @@ export type TournamentStatusDto = z.infer<typeof tournamentStatusSchema>;
 export type ApiEnvelope<T> = { data: T };
 
 export type UserDto = { id: string; displayName: string };
+
+export type TournamentFeeTierDto = {
+  ordinal: number;
+  minPrizePool: string;
+  maxPrizePool: string | null;
+  entryFee: string;
+  prizePoolContribution: string;
+  platformFee: string;
+  futureRewardAllocation: string;
+};
+
+export type PayoutProjectionDto = {
+  prizes: Array<{ position: number; amount: string; basisPoints: number | null }>;
+  firstPrize: string;
+  secondPrize: string;
+  thirdPrize: string;
+  cashLinePosition: number;
+  paidEntries: number;
+  paidEntriesPercentBasisPoints: number;
+  distributableAmount: string;
+  allocatedAmount: string;
+  unallocatedAmount: string;
+};
 
 export type TournamentDto = {
   id: string;
@@ -118,10 +197,17 @@ export type TournamentDto = {
   baseBankroll: string;
   currentPrizePool: string;
   newEntryBankroll: string;
-  entryContribution: string;
-  opensAt: string | null;
-  entryClosesAt: string | null;
-  tradingClosesAt: string | null;
+  currentEntryPrice: string;
+  prizePoolContribution: string;
+  platformFee: string;
+  futureRewardAllocation: string;
+  nextEntryPrice: { prizePoolThreshold: string; entryFee: string } | null;
+  feeTiers: TournamentFeeTierDto[];
+  payoutProjection: PayoutProjectionDto;
+  registrationOpensAt: string;
+  tradingStartsAt: string;
+  entryClosesAt: string;
+  tradingClosesAt: string;
   allowedSymbols: MarketSymbolDto[];
   totalEntries: number;
   maxEntriesPerUser: number;
@@ -130,14 +216,31 @@ export type TournamentDto = {
 
 export type TournamentSummaryDto = Pick<
   TournamentDto,
-  'id' | 'slug' | 'name' | 'status' | 'entryClosesAt' | 'tradingClosesAt'
+  | 'id'
+  | 'slug'
+  | 'name'
+  | 'status'
+  | 'registrationOpensAt'
+  | 'tradingStartsAt'
+  | 'entryClosesAt'
+  | 'tradingClosesAt'
 >;
 
 export type EntrySummaryDto = {
   id: string;
   sequenceNumber: number;
+  tournamentEntryNumber: number;
+  entryFee: string;
+  prizePoolBeforeEntry: string;
+  prizePoolContribution: string;
+  platformAllocation: string;
+  futureRewardAllocation: string;
+  rakebackAmount: string;
+  baseBankrollSnapshot: string;
   startingBankroll: string;
   cash: string;
+  availableBuyingPower: string;
+  positionValue: string;
   realizedPnL: string;
   unrealizedPnL: string;
   equity: string;
@@ -152,6 +255,7 @@ export type EntryDetailDto = EntrySummaryDto;
 
 export type PositionDto = {
   symbol: MarketSymbolDto;
+  side: 'LONG' | 'SHORT';
   quantity: string;
   averageEntryPrice: string;
   currentMark: string | null;
@@ -159,17 +263,27 @@ export type PositionDto = {
   realizedPnL: string;
   unrealizedPnL: string;
   percentageReturn: string;
+  takeProfitPrice: string | null;
+  stopLossPrice: string | null;
 };
 
 export type OrderHistoryDto = {
   id: string;
-  status: 'PENDING' | 'FILLED' | 'REJECTED';
+  status: 'PENDING' | 'OPEN' | 'TRIGGERED' | 'FILLED' | 'CANCELLED' | 'REJECTED' | 'EXPIRED';
   symbol: MarketSymbolDto;
   side: 'BUY' | 'SELL';
+  positionSide: 'LONG' | 'SHORT';
+  intent: 'OPEN' | 'CLOSE';
+  orderType: 'MARKET' | 'LIMIT' | 'STOP_MARKET' | 'TAKE_PROFIT' | 'STOP_LOSS';
   requestedNotional: string | null;
   requestedQuantity: string | null;
   requestedPercentageBps: number | null;
+  limitPrice: string | null;
+  triggerPrice: string | null;
+  rejectionReason: string | null;
+  cancellationReason: string | null;
   createdAt: string;
+  updatedAt: string;
   fill: null | {
     id: string;
     timestamp: string;
@@ -180,23 +294,27 @@ export type OrderHistoryDto = {
     spread: string;
     slippage: string;
     fee: string;
+    realizedPnL: string;
   };
 };
 
 export type OrderResultDto = {
   orderId: string;
-  fillId: string;
-  status: 'FILLED';
+  fillId: string | null;
+  status: 'OPEN' | 'FILLED';
   idempotentReplay: boolean;
   symbol: MarketSymbolDto;
   side: 'BUY' | 'SELL';
+  positionSide: 'LONG' | 'SHORT';
+  intent: 'OPEN' | 'CLOSE';
+  orderType: 'MARKET' | 'LIMIT' | 'STOP_MARKET';
   requestedNotional: string | null;
-  quantity: string;
-  referencePrice: string;
-  fillPrice: string;
-  spread: string;
-  slippage: string;
-  fee: string;
+  quantity: string | null;
+  referencePrice: string | null;
+  fillPrice: string | null;
+  spread: string | null;
+  slippage: string | null;
+  fee: string | null;
   resultingCash: string;
   realizedPnL: string;
   unrealizedPnL: string;
@@ -222,9 +340,22 @@ export type MarketSnapshotDto = {
   price: string;
   marketTimestamp: string;
   source: string;
+  status: 'LIVE' | 'DELAYED' | 'STALE' | 'UNAVAILABLE';
+  change24hBasisPoints: string | null;
+  high24h: string | null;
+  low24h: string | null;
+  volume24h: string | null;
+  metadata: {
+    assetClass: 'CRYPTO';
+    baseCurrency: 'BTC' | 'ETH' | 'SOL';
+    quoteCurrency: 'USD';
+    tradingSchedule: '24/7';
+    pricePrecision: number;
+    quantityPrecision: number;
+  };
 };
 
-export type CandleIntervalDto = '1m' | '5m' | '15m' | '1h';
+export type CandleIntervalDto = '1m' | '5m' | '15m' | '1h' | '4h' | '1d';
 
 export type MarketCandleDto = {
   timestamp: string;
@@ -232,6 +363,30 @@ export type MarketCandleDto = {
   high: string;
   low: string;
   close: string;
+};
+
+export type FillHistoryDto = NonNullable<OrderHistoryDto['fill']> & {
+  orderId: string;
+  symbol: MarketSymbolDto;
+  side: 'BUY' | 'SELL';
+  positionSide: 'LONG' | 'SHORT';
+  intent: 'OPEN' | 'CLOSE';
+  realizedPnL: string;
+};
+
+export type PerformanceDto = {
+  currentPnL: string;
+  returnPercentage: string;
+  realizedPnL: string;
+  unrealizedPnL: string;
+  maxDrawdown: string | null;
+  numberOfTrades: number;
+  winRatePercentage: string | null;
+  averageWinner: string | null;
+  averageLoser: string | null;
+  largestWinner: string | null;
+  largestLoser: string | null;
+  profitFactor: string | null;
 };
 
 export type ApiErrorBody = {

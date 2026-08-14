@@ -13,7 +13,9 @@ export function HomePage() {
     queryKey: queryKeys.tournaments(),
     queryFn: () => api.tournaments(),
   });
-  const featured = tournaments.data?.data.find((item) => item.status === 'OPEN');
+  const featured = tournaments.data?.data.find(
+    (item) => item.status === 'TRADING_ACTIVE' || item.status === 'REGISTRATION_OPEN',
+  );
   return (
     <>
       <section className="hero content-width">
@@ -27,8 +29,8 @@ export function HomePage() {
             <span>Prove your edge.</span>
           </h1>
           <p>
-            Your simulated bankroll grows with the prize pool. Enter later with more capital, or
-            enter earlier with more time to trade. Highest dollar P&amp;L leads.
+            As the prize pool grows, new entries receive a larger trading bankroll. Your starting
+            bankroll locks when you enter. Highest dollar P&amp;L leads.
           </p>
           <div className="hero__actions">
             <Link className="button button--primary button--lg" href="/tournaments">
@@ -60,7 +62,8 @@ export function HomePage() {
                   {formatCompactUsd(featured.currentPrizePool)}
                 </strong>
                 <small>
-                  Enter now with {formatCompactUsd(featured.newEntryBankroll)} simulated
+                  New entry bankroll {formatCompactUsd(featured.newEntryBankroll)} · Entry{' '}
+                  {formatCompactUsd(featured.currentEntryPrice)}
                 </small>
               </div>
               <div className="featured-pool__footer">

@@ -11,17 +11,39 @@ const { client, db } = connection;
 
 type Fixture = { tournamentId: string; userIds: string[] };
 
-async function createFixture(options: { users?: number; maxEntriesPerUser?: number } = {}) {
+async function createFixture(
+  options: { users?: number; maxEntriesPerUser?: number; tierBoundary?: boolean } = {},
+) {
   const suffix = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const [tournament] = await client`
     INSERT INTO tournaments
-      (slug, name, description, status, base_bankroll, current_prize_pool, entry_contribution,
-       entry_closes_at, max_entries_per_user)
+      (slug, name, description, status, base_bankroll, current_prize_pool,
+       registration_opens_at, trading_starts_at, entry_closes_at, trading_closes_at,
+       max_entries_per_user, payout_config)
     VALUES
-      (${`integration-${suffix}`}, 'Integration test', 'Integration test fixture', 'OPEN',
-       10000.00, 500.00, 25.00, now() + interval '1 day', ${options.maxEntriesPerUser ?? 20})
+      (${`integration-${suffix}`}, 'Integration test', 'Integration test fixture', 'TRADING_ACTIVE',
+       10000.00, ${options.tierBoundary ? '4990.00' : '500.00'},
+       now() - interval '2 hours', now() - interval '1 hour',
+       now() + interval '1 day', now() + interval '2 days', ${options.maxEntriesPerUser ?? 20},
+       ${JSON.stringify({ directPrizes: [{ position: 1, basisPoints: 10000 }] })})
     RETURNING id
   `;
+  if (options.tierBoundary)
+    await client`
+      INSERT INTO tournament_entry_fee_tiers
+        (tournament_id, ordinal, min_prize_pool, max_prize_pool, entry_fee,
+         prize_pool_contribution, platform_fee, future_reward_allocation)
+      VALUES
+        (${tournament.id}, 0, 0.00, 5000.00, 15.00, 10.00, 5.00, 0.00),
+        (${tournament.id}, 1, 5000.00, NULL, 20.00, 15.00, 5.00, 0.00)
+    `;
+  else
+    await client`
+      INSERT INTO tournament_entry_fee_tiers
+        (tournament_id, ordinal, min_prize_pool, max_prize_pool, entry_fee,
+         prize_pool_contribution, platform_fee, future_reward_allocation)
+      VALUES (${tournament.id}, 0, 0.00, NULL, 25.00, 25.00, 0.00, 0.00)
+    `;
   const userIds = await Promise.all(
     Array.from({ length: options.users ?? 10 }, (_, index) =>
       client`
@@ -37,12 +59,13 @@ async function createFixture(options: { users?: number; maxEntriesPerUser?: numb
 async function removeFixture(fixture: Fixture) {
   await client`DELETE FROM account_ledger_entries WHERE entry_id IN (SELECT id FROM tournament_entries WHERE tournament_id = ${fixture.tournamentId})`;
   await client`DELETE FROM tournament_entries WHERE tournament_id = ${fixture.tournamentId}`;
+  await client`DELETE FROM tournament_entry_fee_tiers WHERE tournament_id = ${fixture.tournamentId}`;
   await client`DELETE FROM tournaments WHERE id = ${fixture.tournamentId}`;
   await client`DELETE FROM users WHERE id = ANY(${client.array(fixture.userIds)}::uuid[])`;
 }
 
 async function withFixture<T>(
-  options: { users?: number; maxEntriesPerUser?: number },
+  options: { users?: number; maxEntriesPerUser?: number; tierBoundary?: boolean },
   callback: (fixture: Fixture) => Promise<T>,
 ) {
   const fixture = await createFixture(options);
@@ -133,6 +156,25 @@ describe('tournament entry creation concurrency (PostgreSQL)', () => {
           AND type = 'ACCOUNT_INITIALIZED'
       `;
       expect(ledger).toEqual({ count: 2, amount: '21025.00' });
+    });
+  });
+
+  it('serializes concurrent entrants correctly across an exact fee-tier boundary', async () => {
+    await withFixture({ users: 2, tierBoundary: true }, async ({ tournamentId, userIds }) => {
+      const entries = await Promise.all(
+        userIds.map((userId) => createTournamentEntry(db, tournamentId, userId)),
+      );
+      const ordered = entries.sort(
+        (left, right) => left.tournamentEntryNumber - right.tournamentEntryNumber,
+      );
+      expect(ordered.map((entry) => entry.entryFee)).toEqual(['15.00', '20.00']);
+      expect(ordered.map((entry) => entry.prizePoolBeforeEntry)).toEqual(['4990.00', '5000.00']);
+      expect(ordered.map((entry) => entry.startingBankroll)).toEqual(['14990.00', '15000.00']);
+      expect(ordered.map((entry) => entry.prizePoolContribution)).toEqual(['10.00', '15.00']);
+      const [tournament] = await client`
+        SELECT current_prize_pool FROM tournaments WHERE id = ${tournamentId}
+      `;
+      expect(tournament.current_prize_pool).toBe('5015.00');
     });
   });
 

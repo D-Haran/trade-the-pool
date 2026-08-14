@@ -1,0 +1,134 @@
+'use client';
+
+import type { MarketSnapshotDto, MarketSymbolDto } from '@trade-the-pool/shared';
+import { ChevronDown, Radio, Search } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { cn } from '@/lib/cn';
+import { formatPrice } from '@/lib/format';
+
+const symbols: MarketSymbolDto[] = ['BTC-USD', 'ETH-USD', 'SOL-USD'];
+
+function changeLabel(value: string | null | undefined): string {
+  if (value == null) return '—';
+  const basisPoints = BigInt(value);
+  const sign = basisPoints > 0n ? '+' : '';
+  return `${sign}${(Number(basisPoints) / 100).toFixed(2)}%`;
+}
+
+export function MarketHeader({
+  symbol,
+  markets,
+  onSelect,
+  freshness,
+}: {
+  symbol: MarketSymbolDto;
+  markets: Partial<Record<MarketSymbolDto, MarketSnapshotDto>>;
+  onSelect: (symbol: MarketSymbolDto) => void;
+  freshness: 'LIVE' | 'DELAYED' | 'STALE' | 'RECONNECTING' | 'UNAVAILABLE';
+}) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const active = markets[symbol];
+  const filtered = useMemo(
+    () => symbols.filter((item) => item.toLowerCase().includes(search.toLowerCase())),
+    [search],
+  );
+  return (
+    <header className="professional-market-header">
+      <div className="market-selector-shell">
+        <button
+          className="market-selector-trigger"
+          onClick={() => setPickerOpen((value) => !value)}
+        >
+          <span className={`asset-mark asset-mark--${symbol.split('-')[0].toLowerCase()}`}>
+            {symbol.split('-')[0].slice(0, 1)}
+          </span>
+          <span>
+            <strong>{symbol.replace('-', '/')}</strong>
+            <small>Crypto · 24/7</small>
+          </span>
+          <ChevronDown aria-hidden="true" />
+        </button>
+        {pickerOpen ? (
+          <div className="market-picker" role="dialog" aria-label="Select market">
+            <label>
+              <Search aria-hidden="true" />
+              <input
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Search markets"
+                autoFocus
+              />
+            </label>
+            <div className="market-picker__head">
+              <span>Market</span>
+              <span>Last</span>
+              <span>24h</span>
+            </div>
+            {filtered.map((item) => {
+              const market = markets[item];
+              const change = market?.change24hBasisPoints;
+              return (
+                <button
+                  key={item}
+                  className={item === symbol ? 'is-active' : ''}
+                  onClick={() => {
+                    onSelect(item);
+                    setPickerOpen(false);
+                    setSearch('');
+                  }}
+                >
+                  <span>
+                    <strong>{item.replace('-', '/')}</strong>
+                    <small>{item.split('-')[0]} spot</small>
+                  </span>
+                  <b className="tabular">{market ? formatPrice(market.price) : '—'}</b>
+                  <b
+                    className={cn(
+                      'tabular',
+                      change?.startsWith('-') ? 'negative' : change && change !== '0' && 'positive',
+                    )}
+                  >
+                    {changeLabel(change)}
+                  </b>
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+      </div>
+
+      <div className="active-market-price">
+        <strong className="tabular">{active ? formatPrice(active.price) : '—'}</strong>
+        <span
+          className={cn(
+            'tabular',
+            active?.change24hBasisPoints?.startsWith('-') ? 'negative' : 'positive',
+          )}
+        >
+          {changeLabel(active?.change24hBasisPoints)}
+        </span>
+      </div>
+
+      <dl className="market-stat-strip">
+        <div>
+          <dt>24H HIGH</dt>
+          <dd className="tabular">{active?.high24h ? formatPrice(active.high24h) : '—'}</dd>
+        </div>
+        <div>
+          <dt>24H LOW</dt>
+          <dd className="tabular">{active?.low24h ? formatPrice(active.low24h) : '—'}</dd>
+        </div>
+        {active?.volume24h ? (
+          <div>
+            <dt>24H VOL</dt>
+            <dd className="tabular">{active.volume24h}</dd>
+          </div>
+        ) : null}
+      </dl>
+      <span className={`market-freshness market-freshness--${freshness.toLowerCase()}`}>
+        <Radio aria-hidden="true" /> {freshness}
+      </span>
+    </header>
+  );
+}

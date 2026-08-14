@@ -19,8 +19,7 @@ export function TournamentsPage() {
           <h1>Tournaments</h1>
         </div>
         <p>
-          Enter with a simulated bankroll based on the live prize pool. Rank by exact dollar
-          P&amp;L.
+          Bigger pool. Bigger new-entry bankroll. Every entry locks its own economics at creation.
         </p>
       </header>
       {query.isLoading ? <LoadingState label="Loading tournaments" /> : null}

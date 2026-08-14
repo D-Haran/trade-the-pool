@@ -27,6 +27,10 @@ rank, tournament status, prize-pool values, or new-entry bankrolls. Those values
 invalidation events. Client clocks are used only to improve deadline presentation and disable an
 obviously expired control; the API remains authoritative for every write.
 
+Tournament discovery/detail surfaces distinguish Prize Pool, Base Bankroll, New Entry Bankroll,
+Current Entry Price, podium projection, cash line, entry cap, entries, and real deadlines. The
+terminal shows the entry's fixed Starting Bankroll separately from the current Prize Pool.
+
 The API client sends cookies with every request and normalizes the API's success and error
 envelopes. Authentication uses the server-issued HttpOnly session cookie. The development login
 selector discovers its identities from the development API and is not presented as production
@@ -53,17 +57,26 @@ positions, P&L, history, and authorization boundary.
 
 Order submissions use a stable idempotency key for the lifetime of one user intent. Network or
 ambiguous failures retain that key so a retry cannot duplicate a fill. A successful fill or a
-materially edited order creates the next intent. Buy tickets accept an exact notional; sell tickets
-accept an exact quantity or a server-validated percentage. All monetary and quantity fields remain
-decimal strings in the browser and are never used for accounting calculations.
+materially edited order creates the next intent. The ticket supports explicit LONG/SHORT 1x paper
+positions, market/limit/stop execution, notional presets, and optional take-profit/stop-loss
+prices. Position rows expose 25%/50%/full server-validated closes and editable protection. All
+monetary and quantity fields remain decimal strings in the browser and are never used for
+accounting calculations.
 
 ## Market chart
 
 The chart initializes from server-generated OHLC candles and applies authoritative market ticks
-imperatively. It supports 1 minute, 5 minute, 15 minute, and 1 hour intervals. The deterministic
-development provider exposes the same snapshot/history/observer interfaces expected of a later
-live provider. Prices older than 30 seconds are presented as stale and order submission is paused
-until an authoritative update arrives.
+imperatively. It supports candlestick/line display; 1m, 5m, 15m, 1h, 4h, and 1d intervals; SMA,
+EMA, Bollinger Bands, RSI, and MACD; reset; and fullscreen. The deterministic provider does not
+have genuine volume, so VWAP and volume are shown as unavailable rather than synthesized. Prices
+older than 30 seconds are presented as stale and order submission is paused until an authoritative
+update arrives.
+
+The terminal keeps a persistent `PAPER` identity and selected market preferences in Zustand. Its
+desktop layout keeps the watchlist, chart, order ticket, tournament/account strip, and data tabs in
+view together. Mobile preserves the same hierarchy as stacked sections and card-like table rows.
+Open orders, order history, trades, performance, positions, and leaderboard panels use API state;
+missing performance statistics such as durable max drawdown render as unavailable.
 
 ## Accessibility and failure states
 
@@ -87,8 +100,9 @@ pnpm dev
 outside production. The market-control route advances server-owned time and price; it does not let
 the client provide balances, fills, or accounting state.
 
-Unit tests cover display formatting and market candle aggregation. Playwright tests use fixed
-PostgreSQL and Redis fixtures, exercise authentication persistence, entry creation, pool snapshots,
-buy and sell flows, mark-to-market, multiple-entry isolation, ownership checks, close boundaries,
-WebSocket recovery, responsive overflow, and deterministic visual baselines. Fixture cleanup is
-limited to the exact records created by the test suite.
+Unit tests cover display formatting, market candle aggregation/statistics, directional accounting,
+and order triggers. Integration tests cover long and short fills, partial/full closes, limits,
+protection OCO behavior, idempotency, cancellation, and tournament-close expiry. Playwright tests
+use fixed PostgreSQL and Redis fixtures, exercise the primary terminal workflows, market/timeframe
+switching, indicators, realtime recovery, responsive overflow, and deterministic visual baselines.
+Fixture cleanup is limited to the exact records created by the test suite.

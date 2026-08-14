@@ -9,6 +9,8 @@ export const queryKeys = {
   entry: (entryId: string) => ['entry', entryId] as const,
   positions: (entryId: string) => ['entry', entryId, 'positions'] as const,
   orders: (entryId: string, page = 1) => ['entry', entryId, 'orders', page] as const,
+  fills: (entryId: string, page = 1) => ['entry', entryId, 'fills', page] as const,
+  performance: (entryId: string) => ['entry', entryId, 'performance'] as const,
   leaderboard: (tournamentId: string, page = 1) =>
     ['tournament', tournamentId, 'leaderboard', page] as const,
   market: (symbol: MarketSymbolDto) => ['market', symbol] as const,

@@ -1,4 +1,4 @@
-import { parsePrice, type Price } from '@trade-the-pool/shared';
+import { parsePrice, type Price, type Quantity } from '@trade-the-pool/shared';
 
 export const SUPPORTED_SYMBOLS = ['BTC-USD', 'ETH-USD', 'SOL-USD'] as const;
 export type MarketSymbol = (typeof SUPPORTED_SYMBOLS)[number];
@@ -8,6 +8,52 @@ export type MarketPriceSnapshot = {
   price: Price;
   marketTimestamp: Date;
   source: string;
+};
+
+export type AssetClass = 'CRYPTO';
+export type MarketStatus = 'OPEN' | 'HALTED';
+export type MarketMetadata = {
+  symbol: MarketSymbol;
+  baseCurrency: 'BTC' | 'ETH' | 'SOL';
+  quoteCurrency: 'USD';
+  assetClass: AssetClass;
+  tradingSchedule: '24/7';
+  pricePrecision: number;
+  quantityPrecision: number;
+  status: MarketStatus;
+};
+
+export const MARKET_METADATA: Readonly<Record<MarketSymbol, MarketMetadata>> = {
+  'BTC-USD': {
+    symbol: 'BTC-USD',
+    baseCurrency: 'BTC',
+    quoteCurrency: 'USD',
+    assetClass: 'CRYPTO',
+    tradingSchedule: '24/7',
+    pricePrecision: 2,
+    quantityPrecision: 8,
+    status: 'OPEN',
+  },
+  'ETH-USD': {
+    symbol: 'ETH-USD',
+    baseCurrency: 'ETH',
+    quoteCurrency: 'USD',
+    assetClass: 'CRYPTO',
+    tradingSchedule: '24/7',
+    pricePrecision: 2,
+    quantityPrecision: 8,
+    status: 'OPEN',
+  },
+  'SOL-USD': {
+    symbol: 'SOL-USD',
+    baseCurrency: 'SOL',
+    quoteCurrency: 'USD',
+    assetClass: 'CRYPTO',
+    tradingSchedule: '24/7',
+    pricePrecision: 2,
+    quantityPrecision: 8,
+    status: 'OPEN',
+  },
 };
 
 /** Port consumed by the trading engine. Implementations, not callers, own prices and timestamps. */
@@ -20,7 +66,7 @@ export interface ObservableMarketPriceProvider extends MarketPriceProvider {
   subscribe(listener: MarketPriceListener): () => void;
 }
 
-export type CandleInterval = '1m' | '5m' | '15m' | '1h';
+export type CandleInterval = '1m' | '5m' | '15m' | '1h' | '4h' | '1d';
 export type MarketCandle = {
   timestamp: Date;
   open: Price;
@@ -31,6 +77,18 @@ export type MarketCandle = {
 
 export interface MarketHistoryProvider extends MarketPriceProvider {
   getCandles(symbol: MarketSymbol, interval: CandleInterval, limit: number): MarketCandle[];
+}
+
+export type MarketStatistics = {
+  change24hBasisPoints: bigint | null;
+  high24h: Price | null;
+  low24h: Price | null;
+  volume24h: Quantity | null;
+};
+
+export interface MarketDataProvider extends MarketHistoryProvider {
+  getMarkets(): readonly MarketMetadata[];
+  getStatistics(symbol: MarketSymbol): MarketStatistics;
 }
 
 export interface ControllableMarketPriceProvider extends ObservableMarketPriceProvider {
@@ -48,10 +106,12 @@ const INTERVAL_MS: Record<CandleInterval, number> = {
   '5m': 5 * 60_000,
   '15m': 15 * 60_000,
   '1h': 60 * 60_000,
+  '4h': 4 * 60 * 60_000,
+  '1d': 24 * 60 * 60_000,
 };
 
 export class DeterministicMarketPriceSource
-  implements ControllableMarketPriceProvider, MarketHistoryProvider
+  implements ControllableMarketPriceProvider, MarketDataProvider
 {
   readonly source = 'deterministic-memory-v1';
   readonly #snapshots = new Map<MarketSymbol, MarketPriceSnapshot>();
@@ -62,16 +122,12 @@ export class DeterministicMarketPriceSource
     for (const [symbolIndex, symbol] of SUPPORTED_SYMBOLS.entries()) {
       const base = parsePrice(INITIAL_PRICES[symbol]);
       const ticks: MarketPriceSnapshot[] = [];
-      for (let minute = 239; minute >= 0; minute -= 1) {
-        for (let part = 0; part < 4; part += 1) {
-          const sequence = (239 - minute) * 4 + part;
-          const offsetBps = BigInt(((sequence * 17 + symbolIndex * 13) % 61) - 30);
-          const price = (base + (base * offsetBps) / 10_000n) as Price;
-          const marketTimestamp = new Date(
-            initialTimestamp.getTime() - minute * 60_000 - (3 - part) * 15_000,
-          );
-          ticks.push({ symbol, price, marketTimestamp, source: this.source });
-        }
+      for (let minute = 1_439; minute >= 0; minute -= 1) {
+        const sequence = 1_439 - minute;
+        const offsetBps = BigInt(((sequence * 17 + symbolIndex * 13) % 121) - 60);
+        const price = (base + (base * offsetBps) / 10_000n) as Price;
+        const marketTimestamp = new Date(initialTimestamp.getTime() - minute * 60_000);
+        ticks.push({ symbol, price, marketTimestamp, source: this.source });
       }
       const current = {
         symbol,
@@ -124,6 +180,32 @@ export class DeterministicMarketPriceSource
   subscribe(listener: MarketPriceListener): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
+  }
+
+  getMarkets(): readonly MarketMetadata[] {
+    return SUPPORTED_SYMBOLS.map((symbol) => MARKET_METADATA[symbol]);
+  }
+
+  getStatistics(symbol: MarketSymbol): MarketStatistics {
+    const current = this.getSnapshot(symbol);
+    const cutoff = current.marketTimestamp.getTime() - 24 * 60 * 60_000;
+    const ticks = (this.#history.get(symbol) ?? []).filter(
+      (tick) => tick.marketTimestamp.getTime() >= cutoff,
+    );
+    const first = ticks[0];
+    if (!first) return { change24hBasisPoints: null, high24h: null, low24h: null, volume24h: null };
+    let high = first.price;
+    let low = first.price;
+    for (const tick of ticks) {
+      if (tick.price > high) high = tick.price;
+      if (tick.price < low) low = tick.price;
+    }
+    return {
+      change24hBasisPoints: ((current.price - first.price) * 10_000n) / first.price,
+      high24h: high,
+      low24h: low,
+      volume24h: null,
+    };
   }
 
   getCandles(symbol: MarketSymbol, interval: CandleInterval, limit: number): MarketCandle[] {

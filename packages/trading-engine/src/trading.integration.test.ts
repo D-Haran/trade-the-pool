@@ -25,12 +25,21 @@ async function createFixture(startingBankroll = '10000.00'): Promise<Fixture> {
   `;
   const [tournament] = await client`
     INSERT INTO tournaments
-      (slug, name, description, status, base_bankroll, current_prize_pool, entry_contribution,
-       entry_closes_at, trading_closes_at, max_entries_per_user)
+      (slug, name, description, status, base_bankroll, current_prize_pool,
+       registration_opens_at, trading_starts_at, entry_closes_at, trading_closes_at,
+       max_entries_per_user, payout_config)
     VALUES
-      (${`trading-${suffix}`}, 'Trading integration', 'Trading fixture', 'OPEN',
-       ${startingBankroll}, 0.00, 0.00, now() + interval '1 hour', now() + interval '2 hours', 1)
+      (${`trading-${suffix}`}, 'Trading integration', 'Trading fixture', 'TRADING_ACTIVE',
+       ${startingBankroll}, 0.00, now() - interval '2 hours', now() - interval '1 hour',
+       now() + interval '1 hour', now() + interval '2 hours', 1,
+       ${JSON.stringify({ directPrizes: [{ position: 1, basisPoints: 10000 }] })})
     RETURNING id
+  `;
+  await client`
+    INSERT INTO tournament_entry_fee_tiers
+      (tournament_id, ordinal, min_prize_pool, max_prize_pool, entry_fee,
+       prize_pool_contribution, platform_fee, future_reward_allocation)
+    VALUES (${tournament.id}, 0, 0.00, NULL, 0.00, 0.00, 0.00, 0.00)
   `;
   const entry = await createTournamentEntry(db, tournament.id, user.id);
   return { tournamentId: tournament.id, userId: user.id, entryId: entry.id };
@@ -42,6 +51,7 @@ async function removeFixture(fixture: Fixture): Promise<void> {
   await client`DELETE FROM positions WHERE entry_id = ${fixture.entryId}`;
   await client`DELETE FROM orders WHERE entry_id = ${fixture.entryId}`;
   await client`DELETE FROM tournament_entries WHERE id = ${fixture.entryId}`;
+  await client`DELETE FROM tournament_entry_fee_tiers WHERE tournament_id = ${fixture.tournamentId}`;
   await client`DELETE FROM tournaments WHERE id = ${fixture.tournamentId}`;
   await client`DELETE FROM users WHERE id = ${fixture.userId}`;
 }

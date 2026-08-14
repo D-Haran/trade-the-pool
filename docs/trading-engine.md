@@ -1,8 +1,10 @@
 # Trading engine V1
 
-This package implements server-authoritative, long-only paper spot trading for `BTC-USD`,
-`ETH-USD`, and `SOL-USD`. PostgreSQL is the durable source of truth. The in-memory market
-source is only an authoritative test/local price provider and is never an accounting store.
+This package implements server-authoritative, 1x paper trading for `BTC-USD`, `ETH-USD`, and
+`SOL-USD`. It supports explicit long and simulated short positions without leverage,
+derivatives, borrowing, liquidation, or real assets. PostgreSQL is the durable source of truth.
+The in-memory market source is only an authoritative test/local price provider and is never an
+accounting store.
 
 ## Precision and rounding
 
@@ -45,16 +47,21 @@ and cumulative fees separately.
 
 ## Position and account accounting
 
-Buys use weighted-average fill-price cost basis. Partial sells retain the average cost of the
-remaining units. Gross realized P&L is sell proceeds minus the average-price cost of the sold
-quantity. Unrealized P&L is `(mark price - average entry price) * quantity`, rounded once to
-cents. A fully closed position has zero quantity, zero average price, and zero unrealized P&L.
+Long and simulated-short positions use weighted-average fill-price cost basis. A symbol can have
+one direction per entry at a time. Partial closes retain the average price of the remaining
+quantity. Long P&L uses `(exit or mark - average entry) * quantity`; short P&L reverses the
+subtraction. A fully closed position has zero quantity, zero average price, and zero unrealized
+P&L.
 
 Authoritative equity is always:
 
 ```text
-cash + sum(current mark price * open position quantity)
+cash + long marked value - short marked liability
 ```
+
+Available 1x buying power is `equity - gross marked exposure`. Opening a short credits simulated
+sale proceeds and creates an equal marked liability; buying it back debits cash. This keeps the
+accounting auditable while preventing the credited proceeds from being reused as leverage.
 
 The entry's cached cash/P&L/equity columns are updated inside each order transaction.
 `reconcileEntry` independently sums the ledger for expected cash, replays fills in execution
@@ -82,14 +89,22 @@ engine returns the stored order/fill for an identical replay. Reusing the key wi
 symbol, side, or request parameters raises `DUPLICATE_ORDER_CONFLICT`. Concurrent duplicates
 cannot execute cash or position mutations twice.
 
-## Tradability and V1 limits
+## Order lifecycle and tradability
 
-Trading is allowed only while status is `OPEN` or `ENTRY_CLOSED`, a non-null
-`tradingClosesAt` exists, and server time is strictly before it. `ENTRY_CLOSED` therefore stops
-new tournament entries but deliberately permits trading until the trading deadline. The engine
-uses only the provider's price and timestamp and rejects stale or future-dated snapshots.
+Trading is allowed from the configured `tradingStartsAt` boundary until (but excluding)
+`tradingClosesAt`. The derived `TRADING_ACTIVE` and `ENTRY_CLOSED` phases are tradable;
+`ENTRY_CLOSED` stops new tournament entries but deliberately permits trading until the deadline.
+The engine uses only the provider's price and timestamp and rejects stale or future-dated
+snapshots.
 
-V1 supports market buys by dollar notional and market sells by exact quantity or integer basis
-point percentage (including partial and full close). It has no shorts, leverage, derivatives,
-limit/stop orders, external market feeds, real money, blockchain, authentication, WebSockets,
-or public HTTP routes.
+Every professional order declares `OPEN` or `CLOSE`, `LONG` or `SHORT`, and `MARKET`, `LIMIT`, or
+`STOP_MARKET`. Open orders use dollar notional; closes use exact quantity or integer basis-point
+percentage. Take-profit and stop-loss exits are stored as server-owned close orders. Conditional
+orders are selected by indexed symbol/status order, processed deterministically, locked again
+inside their transaction, and filled only from an authoritative tick. A full close cancels any
+remaining close siblings, giving attached protection OCO behavior. Open orders can be cancelled
+explicitly and expire deterministically after tournament trading closes.
+
+There is no real money, blockchain, leverage above 1x, derivatives, liquidation, or external
+exchange order routing. Development market volume is unavailable and is returned as `null`, never
+fabricated.

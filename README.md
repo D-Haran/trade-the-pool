@@ -10,6 +10,11 @@ wallets, and real-money functionality remain intentionally out of scope.
 
 Tournament entry creation locks the tournament row with `SELECT ... FOR UPDATE`, snapshots `baseBankroll + currentPrizePool` as immutable `startingBankroll`, creates the entry, and then increments the prize pool in one transaction. Concurrent entrants therefore receive distinct ordered snapshots and either the complete operation commits or neither the entry nor prize-pool update remains.
 
+Entry pricing now comes from normalized prize-pool fee tiers. Each entry also snapshots its fee,
+allocation split, pre-entry prize pool, base bankroll, global serialized entry number, and optional
+rakeback. Scheduled registration, trading start, entry close, and trading close boundaries are
+server-authoritative. See [`docs/tournament-economics.md`](docs/tournament-economics.md).
+
 All financial values are PostgreSQL `NUMERIC(20,2)` and are represented in domain code as exact integer cents (`bigint`). Values crossing boundaries are serialized as strings such as `"50000.00"`; JavaScript floating-point arithmetic is not used for accounting.
 
 ### Database commands
@@ -19,11 +24,20 @@ docker compose up -d postgres
 pnpm --filter @trade-the-pool/database db:migrate
 pnpm --filter @trade-the-pool/database db:seed
 pnpm --filter @trade-the-pool/trading-engine test
+pnpm simulate --runs 10000 --players 120 --seed 42
 ```
 
 Run the PostgreSQL integration suite with `pnpm test:integration`. It applies the idempotent domain migration first and defaults to `postgres://trade_the_pool:trade_the_pool@localhost:5432/trade_the_pool`; set `DATABASE_URL` to use another database. Fixtures use unique IDs and are cleaned up after each test.
 
 The paper-trading engine's precision, fill, accounting, locking, idempotency, and reconciliation models are documented in [`docs/trading-engine.md`](docs/trading-engine.md).
+The trading terminal supports authoritative 1x paper longs/shorts, market/limit/stop orders,
+take-profit/stop-loss exits, exact performance history, multi-timeframe charts, and responsive
+desktop/mobile workflows. It does not introduce real money, blockchain settlement, leverage, or
+derivatives.
+The deterministic economics simulator, population assumptions, arrival models, price regimes, and
+fairness diagnostics are documented in [`docs/simulator.md`](docs/simulator.md).
+The first 10,000-run baseline and its imbalance findings are in
+[`docs/simulation-baseline.md`](docs/simulation-baseline.md).
 
 ## Prerequisites
 

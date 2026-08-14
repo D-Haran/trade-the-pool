@@ -4,7 +4,6 @@
 -- their configured amount as base bankroll and begin with a zero prize pool.
 ALTER TABLE "tournaments" ADD COLUMN IF NOT EXISTS "base_bankroll" numeric(20,2);
 ALTER TABLE "tournaments" ADD COLUMN IF NOT EXISTS "current_prize_pool" numeric(20,2);
-ALTER TABLE "tournaments" ADD COLUMN IF NOT EXISTS "entry_contribution" numeric(20,2);
 
 DO $$
 BEGIN
@@ -12,6 +11,7 @@ BEGIN
     SELECT 1 FROM information_schema.columns
     WHERE table_name = 'tournaments' AND column_name = 'simulated_pool'
   ) THEN
+    ALTER TABLE "tournaments" ADD COLUMN IF NOT EXISTS "entry_contribution" numeric(20,2);
     EXECUTE $migration$
       WITH entry_baselines AS (
         SELECT tournament_id, min(starting_bankroll) AS first_bankroll
@@ -30,10 +30,8 @@ END $$;
 
 ALTER TABLE "tournaments" ALTER COLUMN "base_bankroll" SET NOT NULL;
 ALTER TABLE "tournaments" ALTER COLUMN "current_prize_pool" SET NOT NULL;
-ALTER TABLE "tournaments" ALTER COLUMN "entry_contribution" SET NOT NULL;
 DO $$ BEGIN ALTER TABLE "tournaments" ADD CONSTRAINT "tournaments_base_bankroll_nonnegative" CHECK (base_bankroll >= 0); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE "tournaments" ADD CONSTRAINT "tournaments_current_prize_pool_nonnegative" CHECK (current_prize_pool >= 0); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-DO $$ BEGIN ALTER TABLE "tournaments" ADD CONSTRAINT "tournaments_entry_contribution_nonnegative" CHECK (entry_contribution >= 0); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 ALTER TABLE "tournaments" DROP COLUMN IF EXISTS "simulated_pool";
 ALTER TABLE "tournaments" DROP COLUMN IF EXISTS "simulated_entry_contribution";

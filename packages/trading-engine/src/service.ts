@@ -38,6 +38,9 @@ import {
   buyPosition,
   calculateFee,
   calculateFillQuote,
+  decreasePosition,
+  increasePosition,
+  grossExposure,
   sellPosition,
   unrealizedPnL,
   type ExactPosition,
@@ -91,11 +94,14 @@ export type MarketOrderResult = {
 export type AccountSummary = {
   entryId: string;
   cash: string;
+  availableBuyingPower: string;
+  positionValue: string;
   realizedPnL: string;
   unrealizedPnL: string;
   equity: string;
   positions: Array<{
     symbol: MarketSymbol;
+    side: 'LONG' | 'SHORT';
     quantity: string;
     averageEntryPrice: string;
     currentMark: string | null;
@@ -124,23 +130,29 @@ function validateIdempotencyKey(key: string): void {
     );
 }
 
+async function latestAuthoritativeSnapshot(provider: MarketPriceProvider, symbol: MarketSymbol) {
+  const snapshot = await provider.getSnapshot(symbol);
+  if (
+    snapshot.symbol !== symbol ||
+    snapshot.price <= 0n ||
+    snapshot.source.length === 0 ||
+    snapshot.source.length > 64 ||
+    !Number.isFinite(snapshot.marketTimestamp.getTime())
+  )
+    throw new DomainError(
+      'FINANCIAL_INVARIANT_VIOLATION',
+      'Market provider returned an invalid symbol, price, or source identifier',
+    );
+  return snapshot;
+}
+
 async function authoritativeSnapshot(
   provider: MarketPriceProvider,
   symbol: MarketSymbol,
   now: Date,
   config: ExecutionConfig,
 ) {
-  const snapshot = await provider.getSnapshot(symbol);
-  if (
-    snapshot.symbol !== symbol ||
-    snapshot.price <= 0n ||
-    snapshot.source.length === 0 ||
-    snapshot.source.length > 64
-  )
-    throw new DomainError(
-      'FINANCIAL_INVARIANT_VIOLATION',
-      'Market provider returned an invalid symbol, price, or source identifier',
-    );
+  const snapshot = await latestAuthoritativeSnapshot(provider, symbol);
   assertFreshSnapshot(snapshot.marketTimestamp, now, config.stalePriceThresholdMs);
   return snapshot;
 }
@@ -154,6 +166,7 @@ function exactPosition(row: typeof positions.$inferSelect): ExactPosition {
   const quantity = parseQuantity(row.quantity);
   return {
     symbol: row.symbol,
+    side: row.side,
     quantity,
     averageEntryPrice: (quantity === 0n ? 0n : parsePrice(row.averageEntryPrice)) as Price,
     realizedPnL: parseSignedMoney(row.realizedPnL),
@@ -297,7 +310,16 @@ export async function executeMarketOrder(
       .where(eq(tournaments.id, entry.tournamentId));
     if (!tournament)
       throw new DomainError('FINANCIAL_INVARIANT_VIOLATION', 'Entry tournament does not exist');
-    assertTradable(tournament.status, tournament.tradingClosesAt, now);
+    assertTradable(
+      tournament.status,
+      {
+        registrationOpensAt: tournament.registrationOpensAt,
+        tradingStartsAt: tournament.tradingStartsAt,
+        entryClosesAt: tournament.entryClosesAt,
+        tradingClosesAt: tournament.tradingClosesAt,
+      },
+      now,
+    );
 
     const snapshot = await authoritativeSnapshot(provider, symbol, now, config);
     const [positionRow] = await tx
@@ -392,6 +414,8 @@ export async function executeMarketOrder(
         entryId: request.entryId,
         symbol,
         side: request.side,
+        positionSide: 'LONG',
+        intent: request.side === 'BUY' ? 'OPEN' : 'CLOSE',
         orderType: 'MARKET',
         requestedNotional,
         requestedQuantity,
@@ -443,6 +467,8 @@ export async function executeMarketOrder(
           )[0].value + 1,
         symbol,
         side: request.side,
+        positionSide: 'LONG',
+        intent: request.side === 'BUY' ? 'OPEN' : 'CLOSE',
         referencePrice: priceToString(quote.referencePrice),
         fillPrice: priceToString(quote.fillPrice),
         quantity: quantityToString(quantity),
@@ -450,6 +476,9 @@ export async function executeMarketOrder(
         spreadAmount: decimalToString(quote.spreadAmount),
         slippageAmount: decimalToString(quote.slippageAmount),
         feeAmount: moneyToString(fee),
+        realizedPnL: signedMoneyToString(
+          moneyFromMinorUnits(nextPosition.realizedPnL - (currentPosition?.realizedPnL ?? 0n)),
+        ),
         marketSource: snapshot.source,
         marketTimestamp: snapshot.marketTimestamp,
         serverTimestamp: now,
@@ -503,7 +532,7 @@ export async function executeMarketOrder(
     await calculateAndPersistAccountState(tx, request.entryId, nextCash, provider, config, now);
     const [filledOrder] = await tx
       .update(orders)
-      .set({ status: 'FILLED', updatedAt: now })
+      .set({ status: 'FILLED', filledAt: now, updatedAt: now })
       .where(eq(orders.id, order.id))
       .returning();
     return resultFromRows(filledOrder, fill, false);
@@ -514,8 +543,6 @@ async function buildAccountSummary(
   tx: Transaction,
   entry: typeof tournamentEntries.$inferSelect,
   provider: MarketPriceProvider,
-  config: ExecutionConfig,
-  now: Date,
 ): Promise<AccountSummary> {
   const rows = await tx.select().from(positions).where(eq(positions.entryId, entry.id));
   const cash = parseMoney(entry.cash);
@@ -530,7 +557,7 @@ async function buildAccountSummary(
     let currentMark: string | null = null;
     let marketValue = moneyFromMinorUnits(0n);
     if (position.quantity > 0n) {
-      const snapshot = await authoritativeSnapshot(provider, position.symbol, now, config);
+      const snapshot = await latestAuthoritativeSnapshot(provider, position.symbol);
       marks.set(position.symbol, snapshot.price);
       currentMark = priceToString(snapshot.price);
       marketValue = priceQuantityToMoney(snapshot.price, position.quantity);
@@ -539,6 +566,7 @@ async function buildAccountSummary(
     }
     serialized.push({
       symbol: position.symbol,
+      side: position.side,
       quantity: quantityToString(position.quantity),
       averageEntryPrice:
         position.quantity === 0n ? '0.00000000' : priceToString(position.averageEntryPrice),
@@ -551,6 +579,10 @@ async function buildAccountSummary(
   return {
     entryId: entry.id,
     cash: moneyToString(cash),
+    availableBuyingPower: signedMoneyToString(
+      moneyFromMinorUnits(accountEquity(cash, exact, marks) - grossExposure(exact, marks)),
+    ),
+    positionValue: moneyToString(grossExposure(exact, marks)),
     realizedPnL: signedMoneyToString(realized),
     unrealizedPnL: signedMoneyToString(totalUnrealized),
     equity: signedMoneyToString(accountEquity(cash, exact, marks)),
@@ -562,10 +594,9 @@ export async function getAccountSummary(
   db: Database,
   provider: MarketPriceProvider,
   entryId: string,
-  options: { config?: ExecutionConfig; now?: Date } = {},
+  _options: { config?: ExecutionConfig; now?: Date } = {},
 ): Promise<AccountSummary> {
-  const config = options.config ?? DEFAULT_EXECUTION_CONFIG;
-  const now = options.now ?? new Date();
+  void _options;
   return db.transaction(async (tx) => {
     const [entry] = await tx
       .select()
@@ -573,7 +604,7 @@ export async function getAccountSummary(
       .where(eq(tournamentEntries.id, entryId))
       .for('update');
     if (!entry) throw new DomainError('ENTRY_NOT_FOUND', 'Tournament entry does not exist');
-    return buildAccountSummary(tx, entry, provider, config, now);
+    return buildAccountSummary(tx, entry, provider);
   });
 }
 
@@ -592,7 +623,7 @@ export async function reconcileEntry(
       .where(eq(tournamentEntries.id, entryId))
       .for('update');
     if (!entry) throw new DomainError('ENTRY_NOT_FOUND', 'Tournament entry does not exist');
-    const summary = await buildAccountSummary(tx, entry, provider, config, now);
+    const summary = await buildAccountSummary(tx, entry, provider);
     const persistedPositions = await tx
       .select()
       .from(positions)
@@ -608,16 +639,22 @@ export async function reconcileEntry(
         const current = rebuilt.get(fill.symbol) ?? null;
         const quantity = parseQuantity(fill.quantity);
         const fillPrice = parsePrice(fill.fillPrice);
-        if (fill.side === 'BUY') {
-          rebuilt.set(fill.symbol, buyPosition(current, fill.symbol, quantity, fillPrice));
+        if (fill.intent === 'OPEN') {
+          rebuilt.set(
+            fill.symbol,
+            increasePosition(current, fill.symbol, fill.positionSide, quantity, fillPrice),
+          );
         } else {
-          rebuilt.set(fill.symbol, sellPosition(current, quantity, fillPrice).position);
+          rebuilt.set(
+            fill.symbol,
+            decreasePosition(current, fill.positionSide, quantity, fillPrice).position,
+          );
         }
       }
     } catch (error) {
       throw new DomainError(
         'FINANCIAL_INVARIANT_VIOLATION',
-        'Fill history cannot be replayed into a valid long-only position state',
+        'Fill history cannot be replayed into a valid position state',
         { cause: error instanceof Error ? error.message : 'Unknown replay error' },
       );
     }

@@ -47,4 +47,24 @@ describe('DeterministicMarketPriceSource', () => {
     expect(minutes.at(-1)?.close).toBe(source.getSnapshot('BTC-USD').price);
     expect(minutes.every((candle) => candle.high >= candle.low)).toBe(true);
   });
+
+  it('exposes honest market metadata, 24-hour statistics, and long chart intervals', () => {
+    const source = new DeterministicMarketPriceSource(new Date('2026-01-02T12:00:00.000Z'));
+    expect(source.getMarkets()).toContainEqual(
+      expect.objectContaining({
+        symbol: 'ETH-USD',
+        assetClass: 'CRYPTO',
+        tradingSchedule: '24/7',
+        status: 'OPEN',
+      }),
+    );
+    const statistics = source.getStatistics('ETH-USD');
+    expect(statistics.high24h).not.toBeNull();
+    expect(statistics.low24h).not.toBeNull();
+    expect(statistics.high24h!).toBeGreaterThanOrEqual(statistics.low24h!);
+    expect(statistics.change24hBasisPoints).not.toBeNull();
+    expect(statistics.volume24h).toBeNull();
+    expect(source.getCandles('ETH-USD', '4h', 20).length).toBeGreaterThan(1);
+    expect(source.getCandles('ETH-USD', '1d', 20).length).toBeGreaterThan(0);
+  });
 });

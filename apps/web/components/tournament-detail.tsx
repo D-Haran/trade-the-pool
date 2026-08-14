@@ -21,6 +21,7 @@ function entryError(error: unknown): string {
     ENTRY_LIMIT_REACHED: 'You have reached the entry limit for this tournament.',
     ENTRY_CLOSED: 'The entry window has closed.',
     TOURNAMENT_NOT_OPEN: 'This tournament is not accepting entries.',
+    REGISTRATION_NOT_OPEN: 'Registration has not opened yet.',
     RATE_LIMITED: 'Entry creation is temporarily rate limited. Please wait before trying again.',
     AUTHENTICATION_REQUIRED: 'Your session expired. Sign in again to create an entry.',
   };
@@ -66,11 +67,13 @@ export function TournamentDetail({ slug }: { slug: string }) {
                     ...current.data,
                     currentPrizePool: event.currentPrizePool,
                     newEntryBankroll: event.newEntryBankroll,
+                    currentEntryPrice: event.currentEntryPrice,
                     totalEntries: event.totalEntries,
                   },
                 }
               : current,
         );
+        void queryClient.invalidateQueries({ queryKey: queryKeys.tournament(slug) });
       }
       if (event.type === 'tournament.status_changed')
         void queryClient.invalidateQueries({ queryKey: queryKeys.tournament(slug) });
@@ -164,6 +167,7 @@ export function TournamentDetail({ slug }: { slug: string }) {
                   <b className="tabular">{formatUsd(confirmation.startingBankroll)}</b>
                 </strong>
                 <small>Current prize pool {formatUsd(confirmation.currentPrizePool)}</small>
+                <small>Entry price locked at {formatUsd(confirmation.entryFee)}</small>
               </div>
               <Link
                 className="button button--primary button--md"
@@ -202,6 +206,9 @@ export function TournamentDetail({ slug }: { slug: string }) {
                       Locked start <b className="tabular">{formatUsd(entry.startingBankroll)}</b>
                     </span>
                     <span>
+                      Entry price <b className="tabular">{formatUsd(entry.entryFee)}</b>
+                    </span>
+                    <span>
                       P&amp;L{' '}
                       <b
                         className={
@@ -219,6 +226,36 @@ export function TournamentDetail({ slug }: { slug: string }) {
               </div>
             </section>
           ) : null}
+          <section className="detail-section payout-section">
+            <div className="detail-section__title">
+              <div>
+                <span>Projected distribution</span>
+                <h2>Prizes</h2>
+              </div>
+              <small>
+                Cash line #{item.payoutProjection.cashLinePosition} ·{' '}
+                {(item.payoutProjection.paidEntriesPercentBasisPoints / 100).toFixed(0)}% paid
+              </small>
+            </div>
+            <div className="payout-grid">
+              <div>
+                <span>1st Prize</span>
+                <strong className="tabular">{formatUsd(item.payoutProjection.firstPrize)}</strong>
+              </div>
+              <div>
+                <span>2nd Prize</span>
+                <strong className="tabular">{formatUsd(item.payoutProjection.secondPrize)}</strong>
+              </div>
+              <div>
+                <span>3rd Prize</span>
+                <strong className="tabular">{formatUsd(item.payoutProjection.thirdPrize)}</strong>
+              </div>
+              <div>
+                <span>Cash Line</span>
+                <strong className="tabular">#{item.payoutProjection.cashLinePosition}</strong>
+              </div>
+            </div>
+          </section>
           <section className="detail-section">
             <div className="detail-section__title">
               <div>
@@ -259,7 +296,8 @@ export function TournamentDetail({ slug }: { slug: string }) {
                 <UsersRound aria-hidden="true" />
                 <strong>Entries grow the prize pool</strong>
                 <p>
-                  Each contribution increases the pool and the bankroll available to the next entry.
+                  The configured share of each fee increases the prize pool and the bankroll
+                  available to the next entry.
                 </p>
               </div>
             </div>
@@ -288,9 +326,23 @@ export function TournamentDetail({ slug }: { slug: string }) {
             </b>
           </div>
           <div className="entry-panel__row">
-            <span>Simulated contribution</span>
-            <b className="tabular">{formatUsd(item.entryContribution)}</b>
+            <span>Entry now</span>
+            <b className="tabular">{formatUsd(item.currentEntryPrice)}</b>
           </div>
+          <div className="entry-panel__row">
+            <span>Prize-pool contribution</span>
+            <b className="tabular">{formatUsd(item.prizePoolContribution)}</b>
+          </div>
+          <div className="entry-panel__row">
+            <span>Platform allocation</span>
+            <b className="tabular">{formatUsd(item.platformFee)}</b>
+          </div>
+          {item.nextEntryPrice ? (
+            <p className="entry-tier-note">
+              Entry rises to {formatUsd(item.nextEntryPrice.entryFee)} when the prize pool reaches{' '}
+              {formatUsd(item.nextEntryPrice.prizePoolThreshold)}.
+            </p>
+          ) : null}
           <div className="entry-panel__row">
             <span>Your entries</span>
             <b className="tabular">
@@ -316,7 +368,7 @@ export function TournamentDetail({ slug }: { slug: string }) {
                   ? 'Create entry'
                   : 'Entry unavailable'}
             </Button>
-          ) : item.status === 'OPEN' ? (
+          ) : item.status === 'REGISTRATION_OPEN' || item.status === 'TRADING_ACTIVE' ? (
             <Link
               className="button button--primary button--md entry-panel__button"
               href={`/login?returnTo=${encodeURIComponent(`/tournaments/${slug}`)}`}
@@ -339,6 +391,12 @@ export function TournamentDetail({ slug }: { slug: string }) {
             </p>
           ) : null}
           <div className="entry-panel__times">
+            <span>
+              Registration opens <b>{formatDate(item.registrationOpensAt)}</b>
+            </span>
+            <span>
+              Trading starts <b>{formatDate(item.tradingStartsAt)}</b>
+            </span>
             <span>
               Entry close <b>{formatDate(item.entryClosesAt)}</b>
             </span>

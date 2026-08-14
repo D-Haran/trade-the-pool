@@ -10,7 +10,9 @@ import {
   marketSymbolSchema,
   orderRequestSchema,
   paginationSchema,
+  positionProtectionRequestSchema,
   priceToString,
+  quantityToString,
   uuidSchema,
   type Environment,
 } from '@trade-the-pool/shared';
@@ -38,6 +40,7 @@ import {
 import type {
   ControllableMarketPriceProvider,
   MarketHistoryProvider,
+  MarketDataProvider,
   MarketPriceProvider,
 } from '@trade-the-pool/market-data';
 
@@ -56,6 +59,7 @@ export type AppDependencies = {
   store: KeyValueStore;
   config: ApiRuntimeConfig;
   hub?: RealtimeHub;
+  trading?: TradingApiService;
   close?: () => Promise<void>;
 };
 
@@ -97,7 +101,7 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
   await app.register(cors, {
     credentials: true,
     origin: config.CORS_ALLOWED_ORIGINS.split(',').map((origin) => origin.trim()),
-    methods: ['GET', 'POST', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   });
   await app.register(websocket, { options: { maxPayload: 8 * 1024 } });
   await app.register(swagger, {
@@ -178,13 +182,9 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
   const snapshots = new AccountSnapshotService(dependencies.db, dependencies.market);
   const tournaments = new TournamentReadService(dependencies.db);
   const leaderboards = new LeaderboardService(dependencies.db, snapshots, dependencies.store, hub);
-  const trading = new TradingApiService(
-    dependencies.db,
-    dependencies.market,
-    snapshots,
-    leaderboards,
-    hub,
-  );
+  const trading =
+    dependencies.trading ??
+    new TradingApiService(dependencies.db, dependencies.market, snapshots, leaderboards, hub);
   const entries = new EntryReadService(dependencies.db, snapshots, leaderboards);
 
   app.addHook('onRequest', async (request) => {
@@ -256,7 +256,8 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
       status: z
         .enum([
           'DRAFT',
-          'OPEN',
+          'REGISTRATION_OPEN',
+          'TRADING_ACTIVE',
           'ENTRY_CLOSED',
           'TRADING_CLOSED',
           'FINALIZING',
@@ -313,7 +314,8 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
       status: z
         .enum([
           'DRAFT',
-          'OPEN',
+          'REGISTRATION_OPEN',
+          'TRADING_ACTIVE',
           'ENTRY_CLOSED',
           'TRADING_CLOSED',
           'FINALIZING',
@@ -369,6 +371,33 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
       return entries.history(id, query);
     },
   );
+  app.get(
+    '/v1/entries/:id/fills',
+    {
+      schema: {
+        tags: ['Orders'],
+        params: openApiSchema(idParameterSchema),
+        querystring: openApiSchema(paginationSchema),
+      },
+    },
+    async (request) => {
+      const user = requireUser(request);
+      const { id } = parse(idParameterSchema, request.params);
+      const query = parse(paginationSchema, request.query);
+      await authorization.canReadPrivateHistory(user.id, id);
+      return entries.fills(id, query);
+    },
+  );
+  app.get(
+    '/v1/entries/:id/performance',
+    { schema: { tags: ['Entries'], params: openApiSchema(idParameterSchema) } },
+    async (request) => {
+      const user = requireUser(request);
+      const { id } = parse(idParameterSchema, request.params);
+      await authorization.canReadPrivateHistory(user.id, id);
+      return { data: await entries.performance(id) };
+    },
+  );
 
   const idempotencyHeaderSchema = z
     .object({ 'idempotency-key': z.string().min(1).max(128) })
@@ -397,59 +426,156 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
       audit(request, 'order.submitted', {
         entryId: body.entryId,
         symbol: body.symbol,
-        side: body.side,
       });
       const engineRequest =
-        body.side === 'BUY'
+        'intent' in body
           ? {
               entryId: body.entryId,
               symbol: body.symbol,
-              side: body.side,
-              requestedNotional: body.notional,
+              positionSide: body.positionSide,
+              intent: body.intent,
+              orderType: body.execution.type,
+              ...(body.intent === 'OPEN'
+                ? {
+                    requestedNotional: body.notional,
+                    takeProfitPrice: body.takeProfitPrice,
+                    stopLossPrice: body.stopLossPrice,
+                  }
+                : body.amount.type === 'QUANTITY'
+                  ? { quantity: body.amount.quantity }
+                  : { percentageBps: body.amount.percentageBps }),
+              ...(body.execution.type === 'LIMIT'
+                ? { limitPrice: body.execution.limitPrice }
+                : body.execution.type === 'STOP_MARKET'
+                  ? { triggerPrice: body.execution.stopPrice }
+                  : {}),
               idempotencyKey,
             }
-          : body.amount.type === 'QUANTITY'
+          : body.side === 'BUY'
             ? {
                 entryId: body.entryId,
                 symbol: body.symbol,
-                side: body.side,
-                quantity: body.amount.quantity,
+                positionSide: 'LONG' as const,
+                intent: 'OPEN' as const,
+                orderType: 'MARKET' as const,
+                requestedNotional: body.notional,
                 idempotencyKey,
               }
-            : {
-                entryId: body.entryId,
-                symbol: body.symbol,
-                side: body.side,
-                percentageBps: body.amount.percentageBps,
-                idempotencyKey,
-              };
+            : body.amount.type === 'QUANTITY'
+              ? {
+                  entryId: body.entryId,
+                  symbol: body.symbol,
+                  positionSide: 'LONG' as const,
+                  intent: 'CLOSE' as const,
+                  orderType: 'MARKET' as const,
+                  quantity: body.amount.quantity,
+                  idempotencyKey,
+                }
+              : {
+                  entryId: body.entryId,
+                  symbol: body.symbol,
+                  positionSide: 'LONG' as const,
+                  intent: 'CLOSE' as const,
+                  orderType: 'MARKET' as const,
+                  percentageBps: body.amount.percentageBps,
+                  idempotencyKey,
+                };
       const result = await trading.execute(engineRequest);
-      audit(request, result.replayed ? 'order.replayed' : 'order.filled', {
-        entryId: body.entryId,
-        orderId: result.order.id,
-        fillId: result.fill.id,
-      });
+      audit(
+        request,
+        result.replayed ? 'order.replayed' : `order.${result.order.status.toLowerCase()}`,
+        {
+          entryId: body.entryId,
+          orderId: result.order.id,
+          fillId: result.fill?.id,
+        },
+      );
       return reply.status(201).send({
         data: {
           orderId: result.order.id,
-          fillId: result.fill.id,
+          fillId: result.fill?.id ?? null,
           status: result.order.status,
           idempotentReplay: result.replayed,
           symbol: result.order.symbol,
           side: result.order.side,
-          requestedNotional: body.side === 'BUY' ? body.notional : null,
-          quantity: result.fill.quantity,
-          referencePrice: result.fill.referencePrice,
-          fillPrice: result.fill.fillPrice,
-          spread: result.fill.spreadAmount,
-          slippage: result.fill.slippageAmount,
-          fee: result.fill.feeAmount,
+          positionSide: result.order.positionSide,
+          intent: result.order.intent,
+          orderType: result.order.orderType,
+          requestedNotional:
+            'intent' in body
+              ? body.intent === 'OPEN'
+                ? body.notional
+                : null
+              : body.side === 'BUY'
+                ? body.notional
+                : null,
+          quantity: result.fill?.quantity ?? null,
+          referencePrice: result.fill?.referencePrice ?? null,
+          fillPrice: result.fill?.fillPrice ?? null,
+          spread: result.fill?.spreadAmount ?? null,
+          slippage: result.fill?.slippageAmount ?? null,
+          fee: result.fill?.feeAmount ?? null,
           resultingCash: result.account.cash,
           realizedPnL: result.account.realizedPnL,
           unrealizedPnL: result.account.unrealizedPnL,
           equity: result.account.equity,
         },
       });
+    },
+  );
+
+  const orderParameterSchema = z.object({ id: uuidSchema, orderId: uuidSchema }).strict();
+  app.delete(
+    '/v1/entries/:id/orders/:orderId',
+    { schema: { tags: ['Orders'], params: openApiSchema(orderParameterSchema) } },
+    async (request) => {
+      const user = requireUser(request);
+      const { id, orderId } = parse(orderParameterSchema, request.params);
+      await authorization.canTradeEntry(user.id, id);
+      const cancelled = await trading.cancel(id, orderId);
+      audit(request, 'order.cancelled', { entryId: id, orderId });
+      return { data: { id: cancelled.id, status: cancelled.status } };
+    },
+  );
+
+  const positionParameterSchema = z.object({ id: uuidSchema, symbol: marketSymbolSchema }).strict();
+  app.put(
+    '/v1/entries/:id/positions/:symbol/protection',
+    {
+      schema: {
+        tags: ['Orders'],
+        params: openApiSchema(positionParameterSchema),
+        body: openApiSchema(positionProtectionRequestSchema),
+        headers: openApiSchema(idempotencyHeaderSchema),
+      },
+    },
+    async (request) => {
+      const user = requireUser(request);
+      const { id, symbol } = parse(positionParameterSchema, request.params);
+      const body = parse(positionProtectionRequestSchema, request.body);
+      await authorization.canTradeEntry(user.id, id);
+      const idempotencyKey = request.headers['idempotency-key'];
+      if (typeof idempotencyKey !== 'string' || !/^[\x21-\x7E]{1,128}$/.test(idempotencyKey))
+        throw new ApiError(
+          400,
+          'INVALID_IDEMPOTENCY_KEY',
+          'A valid Idempotency-Key header is required.',
+        );
+      const protection = await trading.protect({
+        entryId: id,
+        symbol,
+        ...body,
+        idempotencyKey,
+      });
+      audit(request, 'position.protection_updated', { entryId: id, symbol });
+      return {
+        data: protection.map((order) => ({
+          id: order.id,
+          type: order.orderType,
+          triggerPrice: order.triggerPrice,
+          status: order.status,
+        })),
+      };
     },
   );
 
@@ -472,7 +598,7 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
   const marketParameterSchema = z.object({ symbol: marketSymbolSchema }).strict();
   const candleQuerySchema = z
     .object({
-      interval: z.enum(['1m', '5m', '15m', '1h']).default('1m'),
+      interval: z.enum(['1m', '5m', '15m', '1h', '4h', '1d']).default('1m'),
       limit: z.coerce.number().int().min(1).max(500).default(240),
     })
     .strict();
@@ -482,12 +608,42 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
     async (request) => {
       const { symbol } = parse(marketParameterSchema, request.params);
       const snapshot = await dependencies.market.getSnapshot(symbol);
+      const market = dependencies.market as Partial<MarketDataProvider>;
+      const statistics =
+        typeof market.getStatistics === 'function' ? market.getStatistics(symbol) : null;
+      const metadata =
+        typeof market.getMarkets === 'function'
+          ? market.getMarkets().find((item) => item.symbol === symbol)
+          : null;
+      const age = Date.now() - snapshot.marketTimestamp.getTime();
       return {
         data: {
           symbol: snapshot.symbol,
           price: priceToString(snapshot.price),
           marketTimestamp: snapshot.marketTimestamp,
           source: snapshot.source,
+          status: age > 30_000 || age < 0 ? 'STALE' : age > 5_000 ? 'DELAYED' : 'LIVE',
+          change24hBasisPoints: statistics?.change24hBasisPoints?.toString() ?? null,
+          high24h: statistics?.high24h ? priceToString(statistics.high24h) : null,
+          low24h: statistics?.low24h ? priceToString(statistics.low24h) : null,
+          volume24h: statistics?.volume24h ? quantityToString(statistics.volume24h) : null,
+          metadata: metadata
+            ? {
+                assetClass: metadata.assetClass,
+                baseCurrency: metadata.baseCurrency,
+                quoteCurrency: metadata.quoteCurrency,
+                tradingSchedule: metadata.tradingSchedule,
+                pricePrecision: metadata.pricePrecision,
+                quantityPrecision: metadata.quantityPrecision,
+              }
+            : {
+                assetClass: 'CRYPTO',
+                baseCurrency: symbol.split('-')[0],
+                quoteCurrency: 'USD',
+                tradingSchedule: '24/7',
+                pricePrecision: 8,
+                quantityPrecision: 8,
+              },
         },
       };
     },

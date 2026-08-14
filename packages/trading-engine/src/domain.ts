@@ -12,14 +12,89 @@ import {
 } from '@trade-the-pool/shared';
 import type { ExecutionConfig } from './config.js';
 import { DomainError } from './errors.js';
+import {
+  assertTradingWindow,
+  type TournamentSchedule,
+  type TournamentStatus,
+} from './lifecycle.js';
 
 export type OrderSide = 'BUY' | 'SELL';
+export type PositionSide = 'LONG' | 'SHORT';
 export type ExactPosition = {
   symbol: MarketSymbol;
+  side: PositionSide;
   quantity: Quantity;
   averageEntryPrice: Price;
   realizedPnL: Money;
 };
+
+export function executionSide(positionSide: PositionSide, intent: 'OPEN' | 'CLOSE'): OrderSide {
+  return positionSide === 'LONG'
+    ? intent === 'OPEN'
+      ? 'BUY'
+      : 'SELL'
+    : intent === 'OPEN'
+      ? 'SELL'
+      : 'BUY';
+}
+
+export function increasePosition(
+  current: ExactPosition | null,
+  symbol: MarketSymbol,
+  side: PositionSide,
+  quantity: Quantity,
+  fillPrice: Price,
+): ExactPosition {
+  if (quantity <= 0n) throw new DomainError('INVALID_ORDER', 'Position quantity must be positive');
+  if (current && current.quantity > 0n && current.side !== side)
+    throw new DomainError(
+      'POSITION_SIDE_CONFLICT',
+      `Close the existing ${current.side.toLowerCase()} position before opening ${side.toLowerCase()}`,
+    );
+  if (!current || current.quantity === 0n)
+    return {
+      symbol,
+      side,
+      quantity,
+      averageEntryPrice: fillPrice,
+      realizedPnL: current?.realizedPnL ?? moneyFromMinorUnits(0n),
+    };
+  return {
+    ...current,
+    quantity: (current.quantity + quantity) as Quantity,
+    averageEntryPrice: weightedAveragePrice(
+      current.averageEntryPrice,
+      current.quantity,
+      fillPrice,
+      quantity,
+    ),
+  };
+}
+
+export function decreasePosition(
+  current: ExactPosition | null,
+  side: PositionSide,
+  quantity: Quantity,
+  fillPrice: Price,
+): { position: ExactPosition; realizedOnFill: Money } {
+  if (!current || current.side !== side || quantity <= 0n || quantity > current.quantity)
+    throw new DomainError('INSUFFICIENT_POSITION', 'Close quantity exceeds the open position');
+  const exitValue = priceQuantityToMoney(fillPrice, quantity);
+  const entryValue = priceQuantityToMoney(current.averageEntryPrice, quantity);
+  const realizedOnFill = moneyFromMinorUnits(
+    side === 'LONG' ? exitValue - entryValue : entryValue - exitValue,
+  );
+  const remaining = (current.quantity - quantity) as Quantity;
+  return {
+    realizedOnFill,
+    position: {
+      ...current,
+      quantity: remaining,
+      averageEntryPrice: (remaining === 0n ? 0n : current.averageEntryPrice) as Price,
+      realizedPnL: moneyFromMinorUnits(current.realizedPnL + realizedOnFill),
+    },
+  };
+}
 
 export type FillQuote = {
   referencePrice: Price;
@@ -28,16 +103,12 @@ export type FillQuote = {
   slippageAmount: Price;
 };
 
-export function assertTradable(status: string, tradingClosesAt: Date | null, now: Date): void {
-  if (
-    (status !== 'OPEN' && status !== 'ENTRY_CLOSED') ||
-    !tradingClosesAt ||
-    now >= tradingClosesAt
-  )
-    throw new DomainError(
-      'TOURNAMENT_NOT_TRADABLE',
-      'Tournament is not in a tradable state or its trading window has closed',
-    );
+export function assertTradable(
+  status: TournamentStatus,
+  schedule: TournamentSchedule,
+  now: Date,
+): void {
+  assertTradingWindow(status, schedule, now);
 }
 
 export function assertFreshSnapshot(marketTimestamp: Date, now: Date, thresholdMs: number): void {
@@ -89,19 +160,7 @@ export function buyPosition(
   quantity: Quantity,
   fillPrice: Price,
 ): ExactPosition {
-  if (quantity <= 0n) throw new DomainError('INVALID_ORDER', 'Buy quantity must be positive');
-  if (!current)
-    return { symbol, quantity, averageEntryPrice: fillPrice, realizedPnL: moneyFromMinorUnits(0n) };
-  return {
-    ...current,
-    quantity: (current.quantity + quantity) as Quantity,
-    averageEntryPrice: weightedAveragePrice(
-      current.averageEntryPrice,
-      current.quantity,
-      fillPrice,
-      quantity,
-    ),
-  };
+  return increasePosition(current, symbol, 'LONG', quantity, fillPrice);
 }
 
 export function sellPosition(
@@ -109,27 +168,17 @@ export function sellPosition(
   quantity: Quantity,
   fillPrice: Price,
 ): { position: ExactPosition; realizedOnFill: Money } {
-  if (!current || quantity <= 0n || quantity > current.quantity)
-    throw new DomainError('INSUFFICIENT_POSITION', 'Sell quantity exceeds the owned position');
-  const proceeds = priceQuantityToMoney(fillPrice, quantity);
-  const costBasis = priceQuantityToMoney(current.averageEntryPrice, quantity);
-  const realizedOnFill = moneyFromMinorUnits(proceeds - costBasis);
-  const remaining = (current.quantity - quantity) as Quantity;
-  return {
-    realizedOnFill,
-    position: {
-      ...current,
-      quantity: remaining,
-      averageEntryPrice: (remaining === 0n ? 0n : current.averageEntryPrice) as Price,
-      realizedPnL: moneyFromMinorUnits(current.realizedPnL + realizedOnFill),
-    },
-  };
+  return decreasePosition(current, 'LONG', quantity, fillPrice);
 }
 
 export function unrealizedPnL(position: ExactPosition, markPrice: Price): Money {
   return moneyFromMinorUnits(
     divideRoundHalfUp(
-      (markPrice - position.averageEntryPrice) * position.quantity * 100n,
+      (position.side === 'LONG'
+        ? markPrice - position.averageEntryPrice
+        : position.averageEntryPrice - markPrice) *
+        position.quantity *
+        100n,
       DECIMAL_SCALE ** 2n,
     ),
   );
@@ -146,7 +195,25 @@ export function accountEquity(
     const mark = marks.get(position.symbol);
     if (!mark)
       throw new DomainError('FINANCIAL_INVARIANT_VIOLATION', `Missing mark for ${position.symbol}`);
-    equity = moneyFromMinorUnits(equity + priceQuantityToMoney(mark, position.quantity));
+    const marketValue = priceQuantityToMoney(mark, position.quantity);
+    equity = moneyFromMinorUnits(
+      position.side === 'LONG' ? equity + marketValue : equity - marketValue,
+    );
   }
   return equity;
+}
+
+export function grossExposure(
+  positions: readonly ExactPosition[],
+  marks: ReadonlyMap<MarketSymbol, Price>,
+): Money {
+  let exposure = moneyFromMinorUnits(0n);
+  for (const position of positions) {
+    if (position.quantity === 0n) continue;
+    const mark = marks.get(position.symbol);
+    if (!mark)
+      throw new DomainError('FINANCIAL_INVARIANT_VIOLATION', `Missing mark for ${position.symbol}`);
+    exposure = moneyFromMinorUnits(exposure + priceQuantityToMoney(mark, position.quantity));
+  }
+  return exposure;
 }

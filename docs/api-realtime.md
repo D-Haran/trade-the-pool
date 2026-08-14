@@ -19,8 +19,9 @@ private entry policies. Entry details, positions, history, orders, and private r
 require the authenticated user to own the entry. No write route accepts a user ID.
 
 Tournament reads expose exact decimal strings for `baseBankroll`, `currentPrizePool`,
-`newEntryBankroll`, and `entryContribution`. The server derives `newEntryBankroll` as base plus
-the current prize pool; clients do not calculate authoritative financial projections.
+`newEntryBankroll`, `currentEntryPrice`, and its allocation split. They include all schedule
+timestamps, normalized fee bands, the next fee threshold, and an authoritative payout projection.
+The server derives bankrolls, fee selection, and projected prizes; clients do not calculate them.
 
 ## Routes
 
@@ -28,11 +29,13 @@ the current prize pool; clients do not calculate authoritative financial project
 - `GET /v1/auth/me`, `POST /v1/auth/logout`
 - `GET /v1/tournaments`, `GET /v1/tournaments/:id-or-slug`
 - `GET /v1/markets/:symbol`
-- `GET /v1/markets/:symbol/candles?interval=1m|5m|15m|1h&limit=...`
+- `GET /v1/markets/:symbol/candles?interval=1m|5m|15m|1h|4h|1d&limit=...`
 - `POST /v1/tournaments/:id/entries`
 - `GET /v1/me/entries`
-- `GET /v1/entries/:id`, `/positions`, and `/orders`
+- `GET /v1/entries/:id`, `/positions`, `/orders`, `/fills`, and `/performance`
 - `POST /v1/orders` with an `Idempotency-Key` header
+- `DELETE /v1/entries/:id/orders/:orderId`
+- `PUT /v1/entries/:id/positions/:symbol/protection` with an `Idempotency-Key` header
 - `GET /v1/tournaments/:id/leaderboard`
 - `GET /v1/realtime` (WebSocket upgrade)
 - `POST /v1/dev/market/advance` (development auth only)
@@ -42,8 +45,14 @@ OpenAPI is generated from the same Zod request schemas registered with Fastify. 
 set `API_DOCS_ENABLED=true` to serve `/openapi.json` and the explorer at `/documentation`; keep
 them disabled where public docs are inappropriate.
 
-Sell bodies use an explicit nested discriminant: `amount: { type: "QUANTITY", quantity: "..." }`
-or `amount: { type: "PERCENTAGE", percentageBps: 5000 }`. The two forms cannot be combined.
+Professional order bodies declare `intent: "OPEN" | "CLOSE"`,
+`positionSide: "LONG" | "SHORT"`, and an `execution` object. Execution is `MARKET`, `LIMIT` with
+`limitPrice`, or `STOP_MARKET` with `stopPrice`. Opens use exact string `notional` and may attach
+take-profit/stop-loss prices; closes use either
+`amount: { type: "QUANTITY", quantity: "..." }` or
+`amount: { type: "PERCENTAGE", percentageBps: 5000 }`. The server derives BUY/SELL and never
+accepts client prices for valuation or fills. The legacy long market request remains available
+for backward compatibility.
 
 ## Account and leaderboard projections
 
@@ -58,7 +67,9 @@ Percentage return is also calculated with integer arithmetic.
 
 Market snapshots and candles are produced by the authoritative market provider. The deterministic
 development provider maintains a bounded tick history and aggregates exact OHLC values into 1m,
-5m, 15m, and 1h candles. `MarketHistoryProvider` and `ControllableMarketPriceProvider` keep this
+5m, 15m, 1h, 4h, and 1d candles. Market responses also expose asset metadata, status, and exact
+24-hour change/high/low; volume is `null` because the deterministic provider has no real volume.
+`MarketHistoryProvider` and `ControllableMarketPriceProvider` keep this
 behavior behind explicit interfaces so the development controls can be removed when a live source
 is connected. The development advance route accepts a validated symbol and decimal price but owns
 the event timestamp on the server.
@@ -81,8 +92,10 @@ clients fetch REST again; V1 does not replay events. Allowed topics are:
 - `entry:<id>` — owner-only `entry.account_updated`
 
 Clients send `{ "action": "subscribe" | "unsubscribe", "topic": "..." }`. Arbitrary Redis keys
-and internal topics are rejected. The deterministic provider emits market events today and can be
-replaced behind the existing provider/observer interfaces.
+and internal topics are rejected. The deterministic provider emits market events today. The
+production callback first evaluates indexed pending orders for that symbol, then refreshes the
+affected account and leaderboard projections. The provider can be replaced behind the existing
+provider/observer interfaces.
 
 ## Browser and abuse controls
 

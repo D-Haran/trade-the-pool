@@ -15,6 +15,9 @@ import {
   buyPosition,
   calculateFee,
   calculateFillQuote,
+  decreasePosition,
+  grossExposure,
+  increasePosition,
   sellPosition,
   unrealizedPnL,
 } from './domain.js';
@@ -96,19 +99,51 @@ describe('average-cost position accounting', () => {
       'exceeds',
     );
   });
+
+  it('marks and realizes short positions without binary floating-point arithmetic', () => {
+    const short = increasePosition(
+      null,
+      'ETH-USD',
+      'SHORT',
+      parseQuantity('0.25'),
+      parsePrice('4000'),
+    );
+    expect(signedMoneyToString(unrealizedPnL(short, parsePrice('3800')))).toBe('50.00');
+    expect(moneyToString(grossExposure([short], new Map([['ETH-USD', parsePrice('3800')]])))).toBe(
+      '950.00',
+    );
+    expect(
+      moneyToString(
+        accountEquity(parseMoney('11000.00'), [short], new Map([['ETH-USD', parsePrice('3800')]])),
+      ),
+    ).toBe('10050.00');
+    const closed = decreasePosition(short, 'SHORT', parseQuantity('0.10'), parsePrice('3800'));
+    expect(moneyToString(closed.realizedOnFill)).toBe('20.00');
+    expect(closed.position.quantity).toBe(parseQuantity('0.15'));
+  });
 });
 
 describe('server-authoritative tradability', () => {
   const now = new Date('2026-01-01T00:00:00.000Z');
+  const schedule = {
+    registrationOpensAt: new Date(now.getTime() - 2_000),
+    tradingStartsAt: new Date(now.getTime() - 1_000),
+    entryClosesAt: new Date(now.getTime() + 1_000),
+    tradingClosesAt: new Date(now.getTime() + 2_000),
+  };
 
-  it('allows OPEN and ENTRY_CLOSED before trading close', () => {
-    expect(() => assertTradable('OPEN', new Date(now.getTime() + 1), now)).not.toThrow();
-    expect(() => assertTradable('ENTRY_CLOSED', new Date(now.getTime() + 1), now)).not.toThrow();
+  it('allows trading from the configured start through the entry-closed phase', () => {
+    expect(() => assertTradable('TRADING_ACTIVE', schedule, now)).not.toThrow();
+    expect(() =>
+      assertTradable('ENTRY_CLOSED', schedule, new Date(now.getTime() + 1_500)),
+    ).not.toThrow();
   });
 
-  it('rejects non-trading states, close-boundary orders, and stale/future prices', () => {
-    expect(() => assertTradable('DRAFT', new Date(now.getTime() + 1), now)).toThrow();
-    expect(() => assertTradable('OPEN', now, now)).toThrow();
+  it('rejects pre-start and close-boundary orders plus stale/future prices', () => {
+    expect(() =>
+      assertTradable('REGISTRATION_OPEN', schedule, new Date(now.getTime() - 1_500)),
+    ).toThrow();
+    expect(() => assertTradable('TRADING_ACTIVE', schedule, schedule.tradingClosesAt)).toThrow();
     expect(() => assertFreshSnapshot(new Date(now.getTime() - 30_001), now, 30_000)).toThrow();
     expect(() => assertFreshSnapshot(new Date(now.getTime() + 1), now, 30_000)).toThrow();
     expect(() => assertFreshSnapshot(new Date('invalid'), now, 30_000)).toThrow();

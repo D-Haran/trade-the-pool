@@ -5,7 +5,7 @@ import WebSocket from 'ws';
 import { buildApp } from './app.js';
 import { RedisKeyValueStore } from './infrastructure.js';
 import { RealtimeHub, connectMarketRealtime } from './realtime.js';
-import { AccountSnapshotService, LeaderboardService } from './services.js';
+import { AccountSnapshotService, LeaderboardService, TradingApiService } from './services.js';
 
 const databaseUrl =
   process.env.DATABASE_URL ??
@@ -17,12 +17,16 @@ const market = new DeterministicMarketPriceSource(new Date());
 const hub = new RealtimeHub();
 const snapshots = new AccountSnapshotService(connection.db, market);
 const leaderboards = new LeaderboardService(connection.db, snapshots, store, hub);
-const disconnectMarket = connectMarketRealtime(market, hub, leaderboards);
+const trading = new TradingApiService(connection.db, market, snapshots, leaderboards, hub);
+const disconnectMarket = connectMarketRealtime(market, hub, leaderboards, (symbol) =>
+  trading.processMarketTick(symbol),
+);
 const app = await buildApp({
   db: connection.db,
   market,
   store,
   hub,
+  trading,
   config: {
     NODE_ENV: 'test',
     DEV_AUTH_ENABLED: true,
@@ -86,12 +90,27 @@ beforeAll(async () => {
   `;
   const [tournament] = await connection.client`
     INSERT INTO tournaments
-      (slug, name, description, status, base_bankroll, current_prize_pool, entry_contribution,
-       opens_at, entry_closes_at, trading_closes_at, max_entries_per_user)
+      (slug, name, description, status, base_bankroll, current_prize_pool,
+       registration_opens_at, trading_starts_at, entry_closes_at, trading_closes_at,
+       max_entries_per_user, payout_config)
     VALUES
-      (${`api-${suffix}`}, 'API integration', 'API fixture', 'OPEN', 10000.00, 500.00, 25.00,
-       now(), now() + interval '1 hour', now() + interval '2 hours', 3)
+      (${`api-${suffix}`}, 'API integration', 'API fixture', 'TRADING_ACTIVE', 10000.00, 500.00,
+       now() - interval '2 hours', now() - interval '1 hour',
+       now() + interval '1 hour', now() + interval '2 hours', 3,
+       ${JSON.stringify({
+         directPrizes: [
+           { position: 1, basisPoints: 5000 },
+           { position: 2, basisPoints: 3000 },
+           { position: 3, basisPoints: 2000 },
+         ],
+       })})
     RETURNING id
+  `;
+  await connection.client`
+    INSERT INTO tournament_entry_fee_tiers
+      (tournament_id, ordinal, min_prize_pool, max_prize_pool, entry_fee,
+       prize_pool_contribution, platform_fee, future_reward_allocation)
+    VALUES (${tournament.id}, 0, 0.00, NULL, 25.00, 25.00, 0.00, 0.00)
   `;
   userId = user.id;
   otherUserId = other.id;
@@ -123,7 +142,14 @@ describe('V1 HTTP API', () => {
       baseBankroll: '10000.00',
       currentPrizePool: '500.00',
       newEntryBankroll: '10500.00',
-      entryContribution: '25.00',
+      currentEntryPrice: '25.00',
+      prizePoolContribution: '25.00',
+      platformFee: '0.00',
+    });
+    expect(detail.json().data.payoutProjection).toMatchObject({
+      firstPrize: '250.00',
+      secondPrize: '150.00',
+      thirdPrize: '100.00',
     });
 
     const bySlug = await app.inject({ method: 'GET', url: `/v1/tournaments/api-${suffix}` });
@@ -207,6 +233,10 @@ describe('V1 HTTP API', () => {
     expect(created.statusCode).toBe(201);
     expect(created.json().data).toMatchObject({
       sequenceNumber: 1,
+      tournamentEntryNumber: 1,
+      entryFee: '25.00',
+      prizePoolBeforeEntry: '500.00',
+      baseBankrollSnapshot: '10000.00',
       startingBankroll: '10500.00',
       currentPrizePool: '525.00',
       newEntryBankroll: '10525.00',
@@ -295,6 +325,110 @@ describe('V1 HTTP API', () => {
     expect(rebuilt.json().data).toEqual(original);
   });
 
+  it('supports professional short, protection, conditional cancellation, fills, and performance APIs', async () => {
+    const opened = await app.inject({
+      method: 'POST',
+      url: '/v1/orders',
+      headers: { cookie, 'idempotency-key': 'api-short-open' },
+      payload: {
+        entryId,
+        symbol: 'ETH-USD',
+        intent: 'OPEN',
+        positionSide: 'SHORT',
+        notional: '500.00',
+        execution: { type: 'MARKET' },
+        takeProfitPrice: '3900.00',
+        stopLossPrice: '4100.00',
+      },
+    });
+    expect(opened.statusCode).toBe(201);
+    expect(opened.json().data).toMatchObject({
+      status: 'FILLED',
+      side: 'SELL',
+      positionSide: 'SHORT',
+      intent: 'OPEN',
+    });
+
+    const positions = await app.inject({
+      method: 'GET',
+      url: `/v1/entries/${entryId}/positions`,
+      headers: { cookie },
+    });
+    expect(positions.json().data).toContainEqual(
+      expect.objectContaining({
+        symbol: 'ETH-USD',
+        side: 'SHORT',
+        takeProfitPrice: '3900.00000000',
+        stopLossPrice: '4100.00000000',
+      }),
+    );
+
+    const protectedPosition = await app.inject({
+      method: 'PUT',
+      url: `/v1/entries/${entryId}/positions/ETH-USD/protection`,
+      headers: { cookie, 'idempotency-key': 'api-short-protection' },
+      payload: { takeProfitPrice: '3850.00', stopLossPrice: '4150.00' },
+    });
+    expect(protectedPosition.statusCode).toBe(200);
+    expect(protectedPosition.json().data).toEqual([
+      expect.objectContaining({ type: 'TAKE_PROFIT', status: 'OPEN' }),
+      expect.objectContaining({ type: 'STOP_LOSS', status: 'OPEN' }),
+    ]);
+
+    const pending = await app.inject({
+      method: 'POST',
+      url: '/v1/orders',
+      headers: { cookie, 'idempotency-key': 'api-btc-limit' },
+      payload: {
+        entryId,
+        symbol: 'BTC-USD',
+        intent: 'OPEN',
+        positionSide: 'LONG',
+        notional: '500.00',
+        execution: { type: 'LIMIT', limitPrice: '90000.00' },
+      },
+    });
+    expect(pending.json().data.status).toBe('OPEN');
+    const cancelled = await app.inject({
+      method: 'DELETE',
+      url: `/v1/entries/${entryId}/orders/${pending.json().data.orderId}`,
+      headers: { cookie },
+    });
+    expect(cancelled.json().data.status).toBe('CANCELLED');
+
+    const partialClose = await app.inject({
+      method: 'POST',
+      url: '/v1/orders',
+      headers: { cookie, 'idempotency-key': 'api-short-partial-close' },
+      payload: {
+        entryId,
+        symbol: 'ETH-USD',
+        intent: 'CLOSE',
+        positionSide: 'SHORT',
+        amount: { type: 'PERCENTAGE', percentageBps: 5000 },
+        execution: { type: 'MARKET' },
+      },
+    });
+    expect(partialClose.json().data).toMatchObject({ status: 'FILLED', intent: 'CLOSE' });
+
+    const fills = await app.inject({
+      method: 'GET',
+      url: `/v1/entries/${entryId}/fills`,
+      headers: { cookie },
+    });
+    expect(fills.statusCode).toBe(200);
+    expect(fills.json().data).toContainEqual(
+      expect.objectContaining({ symbol: 'ETH-USD', positionSide: 'SHORT', intent: 'CLOSE' }),
+    );
+    const performance = await app.inject({
+      method: 'GET',
+      url: `/v1/entries/${entryId}/performance`,
+      headers: { cookie },
+    });
+    expect(performance.statusCode).toBe(200);
+    expect(performance.json().data).toMatchObject({ numberOfTrades: 1, maxDrawdown: null });
+  });
+
   it('maps insufficient cash, oversell, malformed payload, stale market, and deadline failures', async () => {
     const insufficient = await app.inject({
       method: 'POST',
@@ -335,7 +469,8 @@ describe('V1 HTTP API', () => {
     expect(future.json().error.code).toBe('STALE_MARKET_PRICE');
 
     await connection.client`
-      UPDATE tournaments SET trading_closes_at = now() - interval '1 second'
+      UPDATE tournaments SET entry_closes_at = now() - interval '2 seconds',
+        trading_closes_at = now() - interval '1 second'
       WHERE id = ${tournamentId}
     `;
     const closed = await app.inject({
@@ -345,6 +480,11 @@ describe('V1 HTTP API', () => {
       payload: { entryId, symbol: 'ETH-USD', side: 'BUY', notional: '1.00' },
     });
     expect(closed.json().error.code).toBe('TOURNAMENT_NOT_TRADABLE');
+    await connection.client`
+      UPDATE tournaments SET status = 'TRADING_ACTIVE', trading_starts_at = now() - interval '1 hour',
+        entry_closes_at = now() + interval '1 hour', trading_closes_at = now() + interval '2 hours'
+      WHERE id = ${tournamentId}
+    `;
   });
 });
 
@@ -419,7 +559,8 @@ describe('V1 WebSocket API', () => {
     });
 
     await connection.client`
-      UPDATE tournaments SET status = 'OPEN', trading_closes_at = now() + interval '1 hour'
+      UPDATE tournaments SET status = 'TRADING_ACTIVE', trading_starts_at = now() - interval '1 hour',
+        entry_closes_at = now() + interval '30 minutes', trading_closes_at = now() + interval '1 hour'
       WHERE id = ${tournamentId}
     `;
     const order = await app.inject({
@@ -493,6 +634,7 @@ afterAll(async () => {
       (SELECT id FROM tournament_entries WHERE tournament_id = ${tournamentId})
   `;
   await connection.client`DELETE FROM tournament_entries WHERE tournament_id = ${tournamentId}`;
+  await connection.client`DELETE FROM tournament_entry_fee_tiers WHERE tournament_id = ${tournamentId}`;
   await connection.client`DELETE FROM tournaments WHERE id = ${tournamentId}`;
   await connection.client`DELETE FROM users WHERE id IN (${userId}, ${otherUserId})`;
   await app.close();
