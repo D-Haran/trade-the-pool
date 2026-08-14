@@ -1,0 +1,57 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: #0b0d10;
+  color: #e8edf2;
+  font-family: Arial, Helvetica, sans-serif;
+}
+.shell {
+  min-height: 100vh;
+  display: grid;
+  place-content: center;
+  padding: 2rem;
+  max-width: 760px;
+  margin: auto;
+}
+.eyebrow {
+  color: #7f8b99;
+  font-size: 0.72rem;
+  letter-spacing: 0.2em;
+  font-weight: 700;
+}
+h1 {
+  font-size: clamp(3rem, 9vw, 6.5rem);
+  letter-spacing: -0.07em;
+  line-height: 0.95;
+  margin: 1.5rem 0;
+}
+p {
+  color: #9ca8b5;
+  font-size: 1.15rem;
+  line-height: 1.6;
+  max-width: 34rem;
+}
+.status {
+  margin-top: 3rem;
+  color: #aab5c0;
+  font-size: 0.85rem;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.status span {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 999px;
+  background: #36c98f;
+  box-shadow: 0 0 12px #36c98f;
+}

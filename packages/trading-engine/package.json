@@ -1,0 +1,19 @@
+{
+  "name": "@trade-the-pool/trading-engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@trade-the-pool/database": "workspace:*",
+    "@trade-the-pool/shared": "workspace:*",
+    "drizzle-orm": "^0.38.2"
+  }
+}
