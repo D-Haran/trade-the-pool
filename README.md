@@ -1,6 +1,8 @@
 # Trade the Pool
 
-Production-oriented competitive paper-trading platform foundation. Trading execution, authentication, Solana, wallets, and real-money functionality are intentionally out of scope for this phase.
+Production-oriented competitive paper-trading platform foundation with a deterministic trading
+engine, authenticated V1 API, exact leaderboard projections, and realtime infrastructure. Solana,
+wallets, and real-money functionality remain intentionally out of scope.
 
 ## Domain foundation
 
@@ -58,4 +60,7 @@ pnpm test
 pnpm build
 ```
 
-The API validates required runtime configuration with Zod at startup. PostgreSQL is the durable database boundary and Redis is reserved for non-authoritative infrastructure concerns.
+The API validates required runtime configuration with Zod at startup. PostgreSQL is the durable
+database boundary; Redis stores expiring sessions, rate-limit counters, and recoverable realtime
+leaderboard projections only. See [`docs/api-realtime.md`](docs/api-realtime.md) for routes,
+security, recovery, and the frontend snapshot/subscription contract.

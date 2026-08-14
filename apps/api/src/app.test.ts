@@ -1,7 +1,8 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { buildApp } from './app.js';
+import { MemoryKeyValueStore, RateLimiter } from './infrastructure.js';
 
-const app = buildApp();
+const app = await buildApp();
 
 describe('health endpoint', () => {
   it('returns a healthy response and request id', async () => {
@@ -16,3 +17,14 @@ describe('health endpoint', () => {
 });
 
 afterAll(() => app.close());
+
+describe('centralized rate limiting', () => {
+  it('enforces a fixed-window policy', async () => {
+    const limiter = new RateLimiter(new MemoryKeyValueStore());
+    await limiter.consume('test', 'subject', { limit: 2, windowSeconds: 60 });
+    await limiter.consume('test', 'subject', { limit: 2, windowSeconds: 60 });
+    await expect(
+      limiter.consume('test', 'subject', { limit: 2, windowSeconds: 60 }),
+    ).rejects.toMatchObject({ statusCode: 429, code: 'RATE_LIMITED' });
+  });
+});

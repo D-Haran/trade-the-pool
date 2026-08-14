@@ -63,6 +63,7 @@ export type SellMarketOrder = {
 
 export type MarketOrderRequest = BuyMarketOrder | SellMarketOrder;
 export type MarketOrderResult = {
+  replayed: boolean;
   order: {
     id: string;
     entryId: string;
@@ -97,6 +98,8 @@ export type AccountSummary = {
     symbol: MarketSymbol;
     quantity: string;
     averageEntryPrice: string;
+    currentMark: string | null;
+    marketValue: string;
     realizedPnL: string;
     unrealizedPnL: string;
   }>;
@@ -160,10 +163,12 @@ function exactPosition(row: typeof positions.$inferSelect): ExactPosition {
 function resultFromRows(
   order: typeof orders.$inferSelect,
   fill: typeof fills.$inferSelect,
+  replayed: boolean,
 ): MarketOrderResult {
   if (order.status !== 'FILLED')
     throw new DomainError('FINANCIAL_INVARIANT_VIOLATION', 'Idempotent order is not filled');
   return {
+    replayed,
     order: {
       id: order.id,
       entryId: order.entryId,
@@ -227,7 +232,7 @@ async function existingResult(
     );
   const [fill] = await tx.select().from(fills).where(eq(fills.orderId, order.id));
   if (!fill) throw new DomainError('FINANCIAL_INVARIANT_VIOLATION', 'Filled order has no fill');
-  return resultFromRows(order, fill);
+  return resultFromRows(order, fill, true);
 }
 
 async function calculateAndPersistAccountState(
@@ -501,7 +506,7 @@ export async function executeMarketOrder(
       .set({ status: 'FILLED', updatedAt: now })
       .where(eq(orders.id, order.id))
       .returning();
-    return resultFromRows(filledOrder, fill);
+    return resultFromRows(filledOrder, fill, false);
   });
 }
 
@@ -522,9 +527,13 @@ async function buildAccountSummary(
   for (const position of exact) {
     realized = moneyFromMinorUnits(realized + position.realizedPnL);
     let positionUnrealized = moneyFromMinorUnits(0n);
+    let currentMark: string | null = null;
+    let marketValue = moneyFromMinorUnits(0n);
     if (position.quantity > 0n) {
       const snapshot = await authoritativeSnapshot(provider, position.symbol, now, config);
       marks.set(position.symbol, snapshot.price);
+      currentMark = priceToString(snapshot.price);
+      marketValue = priceQuantityToMoney(snapshot.price, position.quantity);
       positionUnrealized = unrealizedPnL(position, snapshot.price);
       totalUnrealized = moneyFromMinorUnits(totalUnrealized + positionUnrealized);
     }
@@ -533,6 +542,8 @@ async function buildAccountSummary(
       quantity: quantityToString(position.quantity),
       averageEntryPrice:
         position.quantity === 0n ? '0.00000000' : priceToString(position.averageEntryPrice),
+      currentMark,
+      marketValue: moneyToString(marketValue),
       realizedPnL: signedMoneyToString(position.realizedPnL),
       unrealizedPnL: signedMoneyToString(positionUnrealized),
     });

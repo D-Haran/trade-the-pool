@@ -10,6 +10,7 @@ import { addMoney, moneyToString, parseMoney, type Money } from '@trade-the-pool
 import { DomainError } from './errors.js';
 
 export { DomainError } from './errors.js';
+export type { DomainErrorCode } from './errors.js';
 export * from './config.js';
 export * from './domain.js';
 export * from './service.js';
@@ -72,6 +73,8 @@ export type CreatedEntry = {
   unrealizedPnL: string;
   currentEquity: string;
   updatedPool: string;
+  createdAt: Date;
+  updatedAt: Date;
 };
 /** The locked tournament row serializes all entrants, so each snapshot precedes exactly one pool increment. */
 export async function createTournamentEntry(

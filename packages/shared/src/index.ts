@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+export * from './api.js';
+
 export type Money = bigint & { readonly __brand: 'MoneyInCents' };
 export type Price = bigint & { readonly __brand: 'PriceAtEightDecimals' };
 export type Quantity = bigint & { readonly __brand: 'QuantityAtEightDecimals' };
@@ -127,12 +129,31 @@ export function weightedAveragePrice(
   ) as Price;
 }
 
-export const environmentSchema = z.object({
-  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-  API_PORT: z.coerce.number().int().min(1).max(65535).default(4000),
-  DATABASE_URL: z.string().url(),
-  REDIS_URL: z.string().url(),
-});
+export const environmentSchema = z
+  .object({
+    NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+    API_PORT: z.coerce.number().int().min(1).max(65535).default(4000),
+    DATABASE_URL: z.string().url(),
+    REDIS_URL: z.string().url(),
+    DEV_AUTH_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((value) => value === 'true'),
+    API_DOCS_ENABLED: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((value) => value === 'true'),
+    CORS_ALLOWED_ORIGINS: z.string().default('http://localhost:3000'),
+    SESSION_TTL_SECONDS: z.coerce.number().int().min(300).max(2_592_000).default(86_400),
+  })
+  .superRefine((environment, context) => {
+    if (environment.NODE_ENV === 'production' && environment.DEV_AUTH_ENABLED)
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['DEV_AUTH_ENABLED'],
+        message: 'Development authentication cannot be enabled in production',
+      });
+  });
 
 export type Environment = z.infer<typeof environmentSchema>;
 

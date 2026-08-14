@@ -8,15 +8,29 @@
     "dev": "tsx watch src/server.ts",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run --exclude '**/*.integration.test.ts'",
+    "test:integration": "pnpm --filter @trade-the-pool/database db:migrate && vitest run src/api.integration.test.ts"
   },
   "dependencies": {
+    "@fastify/cookie": "^11",
+    "@fastify/cors": "^11",
+    "@fastify/swagger": "^9",
+    "@fastify/swagger-ui": "^5",
+    "@fastify/websocket": "^11",
+    "@trade-the-pool/database": "workspace:*",
+    "@trade-the-pool/market-data": "workspace:*",
     "@trade-the-pool/shared": "workspace:*",
+    "@trade-the-pool/trading-engine": "workspace:*",
+    "drizzle-orm": "^0.38.2",
     "fastify": "^5.2.0",
-    "zod": "^3.24.1"
+    "redis": "^5",
+    "zod": "^3.24.1",
+    "zod-to-json-schema": "^3.24.6"
   },
   "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/ws": "^8",
     "tsx": "^4.19.2",
-    "@types/node": "^22.10.2"
+    "ws": "^8"
   }
 }

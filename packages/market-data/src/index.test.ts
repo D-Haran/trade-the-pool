@@ -23,4 +23,16 @@ describe('DeterministicMarketPriceSource', () => {
       'cannot move backwards',
     );
   });
+
+  it('notifies subscribers with an authoritative snapshot and supports unsubscribe', () => {
+    const source = new DeterministicMarketPriceSource(new Date('2026-01-01T00:00:00.000Z'));
+    const received: string[] = [];
+    const unsubscribe = source.subscribe((snapshot) =>
+      received.push(priceToString(snapshot.price)),
+    );
+    source.advancePrice('SOL-USD', '201.00', new Date('2026-01-01T00:00:01.000Z'));
+    unsubscribe();
+    source.advancePrice('SOL-USD', '202.00', new Date('2026-01-01T00:00:02.000Z'));
+    expect(received).toEqual(['201.00000000']);
+  });
 });

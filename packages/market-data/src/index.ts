@@ -15,6 +15,11 @@ export interface MarketPriceProvider {
   getSnapshot(symbol: MarketSymbol): Promise<MarketPriceSnapshot> | MarketPriceSnapshot;
 }
 
+export type MarketPriceListener = (snapshot: MarketPriceSnapshot) => void;
+export interface ObservableMarketPriceProvider extends MarketPriceProvider {
+  subscribe(listener: MarketPriceListener): () => void;
+}
+
 const INITIAL_PRICES: Record<MarketSymbol, string> = {
   'BTC-USD': '100000.00',
   'ETH-USD': '4000.00',
@@ -24,6 +29,7 @@ const INITIAL_PRICES: Record<MarketSymbol, string> = {
 export class DeterministicMarketPriceSource implements MarketPriceProvider {
   readonly source = 'deterministic-memory-v1';
   readonly #snapshots = new Map<MarketSymbol, MarketPriceSnapshot>();
+  readonly #listeners = new Set<MarketPriceListener>();
 
   constructor(initialTimestamp = new Date()) {
     for (const symbol of SUPPORTED_SYMBOLS) {
@@ -63,6 +69,13 @@ export class DeterministicMarketPriceSource implements MarketPriceProvider {
       source: this.source,
     };
     this.#snapshots.set(symbol, snapshot);
-    return this.getSnapshot(symbol);
+    const published = this.getSnapshot(symbol);
+    for (const listener of this.#listeners) listener(published);
+    return published;
+  }
+
+  subscribe(listener: MarketPriceListener): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
   }
 }

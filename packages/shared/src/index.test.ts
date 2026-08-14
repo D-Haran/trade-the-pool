@@ -14,6 +14,7 @@ import {
   signedMoneyToString,
   subtractMoney,
   weightedAveragePrice,
+  parseEnvironment,
 } from './index.js';
 
 describe('money', () => {
@@ -58,5 +59,24 @@ describe('exact price and quantity arithmetic', () => {
         ),
       ),
     ).toBe('110.00000000');
+  });
+});
+
+describe('environment security', () => {
+  const required = {
+    DATABASE_URL: 'postgresql://localhost/database',
+    REDIS_URL: 'redis://localhost:6379',
+  };
+
+  it('rejects development authentication in production', () => {
+    expect(() =>
+      parseEnvironment({ ...required, NODE_ENV: 'production', DEV_AUTH_ENABLED: 'true' }),
+    ).toThrow('Development authentication cannot be enabled in production');
+  });
+
+  it('parses explicit boolean feature flags without truthy string coercion', () => {
+    expect(parseEnvironment({ ...required, DEV_AUTH_ENABLED: 'false' }).DEV_AUTH_ENABLED).toBe(
+      false,
+    );
   });
 });
