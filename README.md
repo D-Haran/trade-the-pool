@@ -19,7 +19,9 @@ pnpm --filter @trade-the-pool/database db:seed
 pnpm --filter @trade-the-pool/trading-engine test
 ```
 
-The PostgreSQL concurrency test runs when `DATABASE_URL` is set; otherwise it is skipped so unit-only CI remains deterministic. Run it against the local database after migrations for integration validation.
+Run the PostgreSQL integration suite with `pnpm test:integration`. It applies the idempotent domain migration first and defaults to `postgres://trade_the_pool:trade_the_pool@localhost:5432/trade_the_pool`; set `DATABASE_URL` to use another database. Fixtures use unique IDs and are cleaned up after each test.
+
+The paper-trading engine's precision, fill, accounting, locking, idempotency, and reconciliation models are documented in [`docs/trading-engine.md`](docs/trading-engine.md).
 
 ## Prerequisites
 

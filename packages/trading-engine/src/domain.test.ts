@@ -1,0 +1,116 @@
+import { describe, expect, it } from 'vitest';
+import {
+  moneyToString,
+  parseMoney,
+  parsePrice,
+  parseQuantity,
+  priceToString,
+  signedMoneyToString,
+} from '@trade-the-pool/shared';
+import { DEFAULT_EXECUTION_CONFIG } from './config.js';
+import {
+  accountEquity,
+  assertFreshSnapshot,
+  assertTradable,
+  buyPosition,
+  calculateFee,
+  calculateFillQuote,
+  sellPosition,
+  unrealizedPnL,
+} from './domain.js';
+
+describe('deterministic execution model', () => {
+  it('adds spread and notional-sensitive bounded slippage to buys', () => {
+    const small = calculateFillQuote(
+      parsePrice('100000.00'),
+      'BUY',
+      parseMoney('5000.00'),
+      'BTC-USD',
+      DEFAULT_EXECUTION_CONFIG,
+    );
+    const large = calculateFillQuote(
+      parsePrice('100000.00'),
+      'BUY',
+      parseMoney('100000.00'),
+      'BTC-USD',
+      DEFAULT_EXECUTION_CONFIG,
+    );
+    expect(priceToString(small.spreadAmount)).toBe('50.00000000');
+    expect(priceToString(small.slippageAmount)).toBe('1.00000000');
+    expect(priceToString(small.fillPrice)).toBe('100051.00000000');
+    expect(large.fillPrice).toBeGreaterThan(small.fillPrice);
+  });
+
+  it('subtracts adjustments from sells and caps slippage at its configured maximum', () => {
+    const quote = calculateFillQuote(
+      parsePrice('200.00'),
+      'SELL',
+      parseMoney('999999.00'),
+      'SOL-USD',
+      DEFAULT_EXECUTION_CONFIG,
+    );
+    expect(priceToString(quote.spreadAmount)).toBe('0.10000000');
+    expect(priceToString(quote.slippageAmount)).toBe('0.40000000');
+    expect(priceToString(quote.fillPrice)).toBe('199.50000000');
+  });
+
+  it('rounds fees to cents', () => {
+    expect(moneyToString(calculateFee(parseMoney('5000.00'), DEFAULT_EXECUTION_CONFIG))).toBe(
+      '5.00',
+    );
+  });
+});
+
+describe('average-cost position accounting', () => {
+  it('maintains average cost across buys and realizes a partial sale', () => {
+    let position = buyPosition(null, 'SOL-USD', parseQuantity('1'), parsePrice('100'));
+    position = buyPosition(position, 'SOL-USD', parseQuantity('1'), parsePrice('120'));
+    expect(priceToString(position.averageEntryPrice)).toBe('110.00000000');
+    const sold = sellPosition(position, parseQuantity('1'), parsePrice('130'));
+    expect(moneyToString(sold.realizedOnFill)).toBe('20.00');
+    expect(sold.position.quantity).toBe(parseQuantity('1'));
+    expect(priceToString(sold.position.averageEntryPrice)).toBe('110.00000000');
+  });
+
+  it('supports losses and a full close without a negative quantity', () => {
+    const position = buyPosition(null, 'SOL-USD', parseQuantity('2'), parsePrice('100'));
+    expect(signedMoneyToString(unrealizedPnL(position, parsePrice('90')))).toBe('-20.00');
+  });
+
+  it('calculates signed unrealized P&L and equity from cash plus marked holdings', () => {
+    const position = buyPosition(null, 'SOL-USD', parseQuantity('2'), parsePrice('100'));
+    expect(unrealizedPnL(position, parsePrice('90'))).toBe(-2000n);
+    expect(
+      moneyToString(
+        accountEquity(parseMoney('800.00'), [position], new Map([['SOL-USD', parsePrice('90')]])),
+      ),
+    ).toBe('980.00');
+    const closed = sellPosition(position, parseQuantity('2'), parsePrice('90'));
+    expect(closed.position.quantity).toBe(0n);
+    expect(closed.realizedOnFill).toBe(-2000n);
+  });
+
+  it('rejects oversells', () => {
+    const position = buyPosition(null, 'BTC-USD', parseQuantity('0.1'), parsePrice('100000'));
+    expect(() => sellPosition(position, parseQuantity('0.2'), parsePrice('110000'))).toThrow(
+      'exceeds',
+    );
+  });
+});
+
+describe('server-authoritative tradability', () => {
+  const now = new Date('2026-01-01T00:00:00.000Z');
+
+  it('allows OPEN and ENTRY_CLOSED before trading close', () => {
+    expect(() => assertTradable('OPEN', new Date(now.getTime() + 1), now)).not.toThrow();
+    expect(() => assertTradable('ENTRY_CLOSED', new Date(now.getTime() + 1), now)).not.toThrow();
+  });
+
+  it('rejects non-trading states, close-boundary orders, and stale/future prices', () => {
+    expect(() => assertTradable('DRAFT', new Date(now.getTime() + 1), now)).toThrow();
+    expect(() => assertTradable('OPEN', now, now)).toThrow();
+    expect(() => assertFreshSnapshot(new Date(now.getTime() - 30_001), now, 30_000)).toThrow();
+    expect(() => assertFreshSnapshot(new Date(now.getTime() + 1), now, 30_000)).toThrow();
+    expect(() => assertFreshSnapshot(new Date('invalid'), now, 30_000)).toThrow();
+  });
+});

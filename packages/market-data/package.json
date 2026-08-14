@@ -10,5 +10,8 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@trade-the-pool/shared": "workspace:*"
   }
 }

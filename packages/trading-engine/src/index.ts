@@ -1,18 +1,21 @@
 import { and, count, eq } from 'drizzle-orm';
 import type { Database } from '@trade-the-pool/database';
-import { tournamentEntries, tournaments, users } from '@trade-the-pool/database';
+import {
+  accountLedgerEntries,
+  tournamentEntries,
+  tournaments,
+  users,
+} from '@trade-the-pool/database';
 import { addMoney, moneyToString, parseMoney, type Money } from '@trade-the-pool/shared';
+import { DomainError } from './errors.js';
+
+export { DomainError } from './errors.js';
+export * from './config.js';
+export * from './domain.js';
+export * from './service.js';
 
 export type TournamentStatus =
   'DRAFT' | 'OPEN' | 'ENTRY_CLOSED' | 'TRADING_CLOSED' | 'FINALIZING' | 'COMPLETED' | 'CANCELLED';
-export class DomainError extends Error {
-  readonly code: string;
-  constructor(code: string, message: string) {
-    super(message);
-    this.name = 'DomainError';
-    this.code = code;
-  }
-}
 const transitions: Record<Exclude<TournamentStatus, 'CANCELLED'>, readonly TournamentStatus[]> = {
   DRAFT: ['OPEN', 'CANCELLED'],
   OPEN: ['ENTRY_CLOSED', 'CANCELLED'],
@@ -121,6 +124,15 @@ export async function createTournamentEntry(
         currentEquity: bankroll,
       })
       .returning();
+    await tx.insert(accountLedgerEntries).values({
+      entryId: entry.id,
+      type: 'ACCOUNT_INITIALIZED',
+      amount: bankroll,
+      referenceType: 'TOURNAMENT_ENTRY',
+      referenceId: entry.id,
+      metadata: { tournamentId, startingBankroll: bankroll },
+      createdAt: now,
+    });
     await tx
       .update(tournaments)
       .set({ simulatedPool: moneyToString(updatedPool), updatedAt: now })

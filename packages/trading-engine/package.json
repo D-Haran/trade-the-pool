@@ -9,10 +9,12 @@
   "scripts": {
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests --exclude '**/*.integration.test.ts'",
+    "test:integration": "pnpm --filter @trade-the-pool/database db:migrate && vitest run src/entry-creation.integration.test.ts && vitest run src/trading.integration.test.ts"
   },
   "dependencies": {
     "@trade-the-pool/database": "workspace:*",
+    "@trade-the-pool/market-data": "workspace:*",
     "@trade-the-pool/shared": "workspace:*",
     "drizzle-orm": "^0.38.2"
   }
