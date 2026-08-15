@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parsePrice } from '@trade-the-pool/shared';
+import { parsePrice, parseQuantity } from '@trade-the-pool/shared';
 import { createLiveMarketDataService, LiveMarketDataService } from './live-service.js';
 import type { UpstreamEvent, UpstreamMarketDataAdapter } from './providers.js';
 import type { MarketCandle, MarketPriceSnapshot, MarketSymbol, ProviderHealth } from './types.js';
@@ -211,5 +211,46 @@ describe('LiveMarketDataService', () => {
     });
     expect(() => service.getSnapshot('BTC-USD')).toThrow('unavailable');
     void service.close();
+  });
+
+  it('serves sub-minute history from genuine normalized trades without calling Kraken OHLC', async () => {
+    const primary = new Adapter('primary');
+    const service = new LiveMarketDataService({
+      primary,
+      comparison: new Adapter('comparison'),
+      authoritative: new Adapter('authority'),
+    });
+    service.start();
+    const tradeTimestamp = new Date();
+    const bucket = new Date(Math.floor(tradeTimestamp.getTime() / 1_000) * 1_000);
+    primary.emit({
+      type: 'trades',
+      symbol: 'BTC-USD',
+      trades: [
+        {
+          id: 'trade-1',
+          symbol: 'BTC-USD',
+          price: parsePrice('100'),
+          quantity: parseQuantity('0.25'),
+          side: 'BUY',
+          timestamp: tradeTimestamp,
+          venue: 'Kraken',
+        },
+      ],
+    });
+    const candles = await service.getCandles('BTC-USD', '1s', 100);
+    expect(candles).toHaveLength(1);
+    expect(candles[0]).toMatchObject({
+      timestamp: bucket,
+      close: parsePrice('100'),
+      volume: parseQuantity('0.25'),
+    });
+    expect(primary.candleRequests).toBe(0);
+    expect(service.getHealth().components.subMinuteCandles).toBe('primary:matched-trades');
+    expect(service.getHealth().subMinute[0]).toMatchObject({
+      symbol: 'BTC-USD',
+      bufferSizes: { '1s': 1, '5s': 1, '15s': 1, '30s': 1 },
+    });
+    await service.close();
   });
 });

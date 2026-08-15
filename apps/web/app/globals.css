@@ -3286,6 +3286,18 @@ a {
   display: flex;
   align-items: center;
 }
+.timeframe-tabs {
+  overflow-x: auto;
+  flex: 1 1 auto;
+  white-space: nowrap;
+  scrollbar-width: none;
+}
+.timeframe-tabs::-webkit-scrollbar {
+  display: none;
+}
+.chart-toolbar__actions {
+  flex: 0 0 auto;
+}
 .timeframe-tabs button,
 .chart-toolbar__actions > button,
 .chart-type-toggle button {

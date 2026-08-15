@@ -1,4 +1,9 @@
-import { parsePrice, type Price, type Quantity } from '@trade-the-pool/shared';
+import {
+  CANDLE_INTERVAL_SECONDS,
+  parsePrice,
+  type Price,
+  type Quantity,
+} from '@trade-the-pool/shared';
 import {
   MARKET_METADATA,
   SUPPORTED_SYMBOLS,
@@ -33,13 +38,13 @@ const INITIAL_PRICES: Record<MarketSymbol, string> = {
 };
 
 export const INTERVAL_MS: Record<CandleInterval, number> = {
-  '1m': 60_000,
-  '5m': 5 * 60_000,
-  '15m': 15 * 60_000,
-  '1h': 60 * 60_000,
-  '4h': 4 * 60 * 60_000,
-  '1d': 24 * 60 * 60_000,
-};
+  ...Object.fromEntries(
+    Object.entries(CANDLE_INTERVAL_SECONDS).map(([interval, seconds]) => [
+      interval,
+      seconds * 1_000,
+    ]),
+  ),
+} as Record<CandleInterval, number>;
 
 export class DeterministicMarketPriceSource
   implements ControllableMarketPriceProvider, MarketDataProvider
@@ -207,6 +212,33 @@ export class DeterministicMarketPriceSource
     const intervalMs = INTERVAL_MS[interval];
     if (!intervalMs || !Number.isInteger(limit) || limit < 1 || limit > 500)
       throw new Error('Invalid candle request');
+    if (intervalMs < 60_000) {
+      const snapshot = this.getSnapshot(symbol);
+      const end = Math.floor(snapshot.marketTimestamp.getTime() / intervalMs) * intervalMs;
+      let previous = snapshot.price;
+      const result: MarketCandle[] = [];
+      for (let index = limit - 1; index >= 0; index -= 1) {
+        const timestamp = end - index * intervalMs;
+        const offset = BigInt(((Math.floor(timestamp / 1_000) * 17) % 41) - 20);
+        const close =
+          index === 0
+            ? snapshot.price
+            : ((snapshot.price + (snapshot.price * offset) / 100_000n) as Price);
+        const high = previous > close ? previous : close;
+        const low = previous < close ? previous : close;
+        result.push({
+          timestamp: new Date(timestamp),
+          open: previous,
+          high,
+          low,
+          close,
+          volume: (1_000_000n +
+            BigInt(Math.abs(Math.floor(timestamp / 1_000) % 97)) * 10_000n) as Quantity,
+        });
+        previous = close;
+      }
+      return result;
+    }
     const candles = new Map<number, MarketCandle>();
     for (const tick of this.#history.get(symbol) ?? []) {
       const timestamp = Math.floor(tick.marketTimestamp.getTime() / intervalMs) * intervalMs;
@@ -277,6 +309,7 @@ export class DeterministicMarketPriceSource
         statistics24h: this.source,
         historicalCandles: this.source,
         realtimeCandles: this.source,
+        subMinuteCandles: `${this.source}:simulated`,
         orderBook: this.source,
         recentTrades: this.source,
         authoritativeMark: this.source,
@@ -301,6 +334,13 @@ export class DeterministicMarketPriceSource
           lastError: null,
         },
       ],
+      subMinute: SUPPORTED_SYMBOLS.map((symbol) => ({
+        symbol,
+        lastTradeReceived: this.#trades.get(symbol)?.[0]?.timestamp ?? null,
+        lastOneSecondCandleFinalized: this.getSnapshot(symbol).marketTimestamp,
+        bufferSizes: { '1s': 500, '5s': 500, '15s': 500, '30s': 500 },
+        aggregationLagMs: 0,
+      })),
       markets: SUPPORTED_SYMBOLS.map((symbol) => ({
         symbol,
         status: 'LIVE',

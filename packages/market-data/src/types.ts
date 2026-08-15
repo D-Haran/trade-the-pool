@@ -5,6 +5,7 @@ import {
   type MarketSymbol,
   type Price,
   type Quantity,
+  type CandleIntervalDto,
 } from '@trade-the-pool/shared';
 
 export const SUPPORTED_SYMBOLS = SUPPORTED_MARKET_SYMBOLS;
@@ -93,7 +94,7 @@ export interface ObservableMarketPriceProvider extends MarketPriceProvider {
   subscribe(listener: MarketPriceListener): () => void;
 }
 
-export type CandleInterval = '1m' | '5m' | '15m' | '1h' | '4h' | '1d';
+export type CandleInterval = CandleIntervalDto;
 export type MarketCandle = {
   timestamp: Date;
   open: Price;
@@ -171,6 +172,7 @@ export type MarketDataHealth = {
     statistics24h: string;
     historicalCandles: string;
     realtimeCandles: string;
+    subMinuteCandles: string;
     orderBook: string;
     recentTrades: string;
     authoritativeMark: string;
@@ -183,6 +185,13 @@ export type MarketDataHealth = {
     pythFeedConfigured: boolean;
   }>;
   providers: ProviderHealth[];
+  subMinute: Array<{
+    symbol: MarketSymbol;
+    lastTradeReceived: Date | null;
+    lastOneSecondCandleFinalized: Date | null;
+    bufferSizes: Record<'1s' | '5s' | '15s' | '30s', number>;
+    aggregationLagMs: number | null;
+  }>;
   markets: Array<{
     symbol: MarketSymbol;
     status: MarketFreshnessStatus;
@@ -199,6 +208,12 @@ export type NormalizedMarketEvent =
   | { type: 'book'; book: MarketOrderBook }
   | { type: 'trades'; symbol: MarketSymbol; trades: MarketTrade[] }
   | { type: 'candle'; symbol: MarketSymbol; interval: CandleInterval; candle: MarketCandle }
+  | {
+      type: 'candle-status';
+      symbol: MarketSymbol;
+      interval: '1s' | '5s' | '15s' | '30s';
+      status: 'LIVE' | 'STALE' | 'UNAVAILABLE';
+    }
   | { type: 'status'; symbol: MarketSymbol; status: MarketFreshnessStatus }
   | { type: 'provider'; health: ProviderHealth };
 

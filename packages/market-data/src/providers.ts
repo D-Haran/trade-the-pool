@@ -211,7 +211,8 @@ abstract class ReconnectingAdapter implements UpstreamMarketDataAdapter {
   }
 }
 
-const KRAKEN_INTERVALS: Record<CandleInterval, number> = {
+type KrakenCandleInterval = Exclude<CandleInterval, '1s' | '5s' | '15s' | '30s'>;
+const KRAKEN_INTERVALS: Record<KrakenCandleInterval, number> = {
   '1m': 1,
   '5m': 5,
   '15m': 15,
@@ -389,7 +390,7 @@ export class KrakenMarketDataAdapter extends ReconnectingAdapter {
       const timestamp = validDate(item.interval_begin);
       const interval = Object.entries(KRAKEN_INTERVALS).find(
         ([, minutes]) => minutes === Number(item.interval),
-      )?.[0] as CandleInterval | undefined;
+      )?.[0] as KrakenCandleInterval | undefined;
       if (!symbol || !timestamp || !interval) continue;
       this.emit({
         type: 'candle',
@@ -412,9 +413,12 @@ export class KrakenMarketDataAdapter extends ReconnectingAdapter {
     interval: CandleInterval,
     limit: number,
   ): Promise<MarketCandle[]> {
+    if (!(interval in KRAKEN_INTERVALS))
+      throw new Error('Kraken OHLC does not provide sub-minute candles');
+    const krakenInterval = interval as KrakenCandleInterval;
     const pair = encodeURIComponent(MARKET_METADATA[symbol].providerSymbols.kraken);
     const response = await fetch(
-      `${this.options.restUrl.replace(/\/$/, '')}/0/public/OHLC?pair=${pair}&interval=${KRAKEN_INTERVALS[interval]}`,
+      `${this.options.restUrl.replace(/\/$/, '')}/0/public/OHLC?pair=${pair}&interval=${KRAKEN_INTERVALS[krakenInterval]}`,
       { headers: { accept: 'application/json', 'user-agent': 'trade-the-pool-market-data/1.0' } },
     );
     if (!response.ok) throw new Error(`Kraken OHLC request failed with ${response.status}`);
@@ -662,9 +666,13 @@ export class PythHermesAdapter implements UpstreamMarketDataAdapter {
           if (data) {
             const receivedAt = new Date();
             this.#health.lastMessageAt = receivedAt;
-            for (const snapshot of parsePythUpdates(JSON.parse(data), {
-              [symbol]: this.options.feedIds[symbol],
-            }, receivedAt)) {
+            for (const snapshot of parsePythUpdates(
+              JSON.parse(data),
+              {
+                [symbol]: this.options.feedIds[symbol],
+              },
+              receivedAt,
+            )) {
               this.#health.lastValidPriceAt = receivedAt;
               this.emit({ type: 'price', role: 'AUTHORITATIVE', snapshot });
             }

@@ -146,6 +146,31 @@ test.describe.serial('authoritative trading journey', () => {
     await limitRow.getByRole('button', { name: 'Cancel' }).click();
     await expect(page.getByText('Order cancelled')).toBeVisible();
 
+    await page.getByRole('button', { name: '1s', exact: true }).click();
+    await expect(page.getByRole('button', { name: '1s', exact: true })).toHaveClass(/is-active/);
+    const oneSecondHistory = await page.request.get(
+      `${apiUrl}/v1/markets/BTC-USD/candles?interval=1s&limit=240`,
+    );
+    expect(oneSecondHistory.status()).toBe(200);
+    expect((await oneSecondHistory.json()).data).toHaveLength(240);
+    await page.request.post(`${apiUrl}/v1/dev/market/advance`, {
+      data: { symbol: 'BTC-USD', price: '100050.00' },
+    });
+    await page.getByRole('button', { name: '5s', exact: true }).click();
+    await expect(page.getByRole('button', { name: '5s', exact: true })).toHaveClass(/is-active/);
+    await page.getByRole('button', { name: '15s', exact: true }).click();
+    await page.getByRole('button', { name: '15m', exact: true }).click();
+    await page.getByRole('button', { name: '1s', exact: true }).click();
+    await expect(page.getByRole('button', { name: '1s', exact: true })).toHaveClass(/is-active/);
+    await selectMarket('ETH/USD');
+    await page.request.post(`${apiUrl}/v1/dev/market/advance`, {
+      data: { symbol: 'BTC-USD', price: '100075.00' },
+    });
+    await expect(page.locator('.market-selector-trigger')).toContainText('ETH/USD');
+    await expect(page.locator('.market-chart')).toHaveAttribute('aria-label', /ETH\/USD/);
+    await page.getByRole('button', { name: '1m', exact: true }).click();
+    await expect(page.getByRole('button', { name: '1m', exact: true })).toHaveClass(/is-active/);
+
     await Promise.all([
       page.request.post(`${apiUrl}/v1/dev/market/advance`, {
         data: { symbol: 'ETH-USD', price: '4100.00' },
@@ -227,6 +252,7 @@ test.describe.serial('authoritative trading journey', () => {
 
   test('keeps PostgreSQL account state across logout, login, and navigation', async () => {
     await page.getByRole('button', { name: 'Sign out' }).click();
+    await expect(page).toHaveURL(/\/$/);
     await page.goto('/login?returnTo=%2Fdashboard');
     await page.getByRole('button', { name: /E2E Trader/ }).click();
     await expect(page).toHaveURL(/\/dashboard$/);

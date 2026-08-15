@@ -32,7 +32,7 @@ The server derives bankrolls, fee selection, and projected prizes; clients do no
 - `PUT /v1/me/wallets/:id/primary`
 - `GET /v1/tournaments`, `GET /v1/tournaments/:id-or-slug`
 - `GET /v1/markets`, `GET /v1/markets/:symbol`
-- `GET /v1/markets/:symbol/candles?interval=1m|5m|15m|1h|4h|1d&limit=...`
+- `GET /v1/markets/:symbol/candles?interval=1s|5s|15s|30s|1m|5m|15m|1h|4h|1d&limit=...`
 - `GET /v1/markets/:symbol/book?depth=...`, `GET /v1/markets/:symbol/trades?limit=...`
 - `POST /v1/tournaments/:id/entries`
 - `GET /v1/me/entries`
@@ -71,8 +71,9 @@ Percentage return is also calculated with integer arithmetic.
 
 Market snapshots and candles are produced behind one provider boundary. In live mode Kraken owns
 the visible exchange context/candles/book/trades, Coinbase is an integrity comparison, and Pyth is
-the execution mark; in fake mode the bounded deterministic provider aggregates exact OHLC and
-reports unavailable volume. Provider response shapes never cross the API. The development advance
+the execution mark; in fake mode the bounded deterministic provider aggregates exact OHLC. Live
+sub-minute OHLCV is derived centrally from genuine Kraken matched trades and remains independent
+from Pyth execution marks. Provider response shapes never cross the API. The development advance
 route accepts a validated symbol and decimal price but owns the event timestamp on the server. See
 [`market-data.md`](market-data.md) for freshness, deviation, caching, failure, and settlement rules.
 
@@ -88,8 +89,9 @@ only tournaments with an open position in that symbol.
 Clients first fetch REST state, connect, subscribe, and apply compact events. After any reconnect,
 clients fetch REST again; V1 does not replay events. Allowed topics are:
 
-- `market:<symbol>` — public `market.price`, `market.book`, `market.trades`, `market.candle`, and
-  `market.status`
+- `market:<symbol>` — public `market.price`, `market.book`, `market.trades`, and `market.status`
+- `market:<symbol>:candles:<interval>` — scoped `market.candle` updates and sub-minute
+  `market.candle_status`
 - `tournament:<id>` — public `tournament.prize_pool_updated`, `tournament.status_changed`, and
   `leaderboard.updated`
 - `entry:<id>` — owner-only `entry.account_updated`

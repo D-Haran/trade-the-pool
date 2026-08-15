@@ -80,10 +80,7 @@ describe('provider normalization', () => {
   it('keeps entitled Pyth symbol streams live when another symbol is forbidden', async () => {
     const btcId = 'aa'.repeat(32);
     const feedIds = Object.fromEntries(
-      SUPPORTED_SYMBOLS.map((symbol) => [
-        symbol,
-        symbol === 'BTC-USD' ? btcId : 'bb'.repeat(32),
-      ]),
+      SUPPORTED_SYMBOLS.map((symbol) => [symbol, symbol === 'BTC-USD' ? btcId : 'bb'.repeat(32)]),
     ) as Record<MarketSymbol, string>;
     vi.stubGlobal(
       'fetch',

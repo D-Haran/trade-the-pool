@@ -7,12 +7,13 @@ timestamp, balance, P&L value, or trigger decision.
 
 ## Source responsibilities
 
-| Internal responsibility                                                             | Live source                              | Notes                                                                                         |
-| ----------------------------------------------------------------------------------- | ---------------------------------------- | --------------------------------------------------------------------------------------------- |
-| Exchange last price, 24h statistics, historical/realtime OHLC, Level-2 book, trades | Kraken WebSocket v2 and public OHLC REST | The visible book is venue-specific and is never presented as consolidated.                    |
-| Independent comparison                                                              | Coinbase Advanced Trade public ticker    | Used only for integrity/deviation checks; it does not silently become execution authority.    |
-| `AUTHORITATIVE_MARK`                                                                | Pyth Hermes price stream                 | Requires a server-side API key and an explicitly configured feed ID for every enabled market. |
-| Test and local fake mode                                                            | `DeterministicMarketPriceSource`         | Network-free, exact, controllable fixtures; never an implicit fallback from live mode.        |
+| Internal responsibility                                                 | Live source                              | Notes                                                                                         |
+| ----------------------------------------------------------------------- | ---------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Exchange last price, 24h statistics, minute+ OHLC, Level-2 book, trades | Kraken WebSocket v2 and public OHLC REST | The visible book is venue-specific and is never presented as consolidated.                    |
+| 1s/5s/15s/30s candles                                                   | Kraken WebSocket v2 matched trades       | Aggregated centrally; never interpolated or generated from ticker motion in live mode.        |
+| Independent comparison                                                  | Coinbase Advanced Trade public ticker    | Used only for integrity/deviation checks; it does not silently become execution authority.    |
+| `AUTHORITATIVE_MARK`                                                    | Pyth Hermes price stream                 | Requires a server-side API key and an explicitly configured feed ID for every enabled market. |
+| Test and local fake mode                                                | `DeterministicMarketPriceSource`         | Network-free, exact, controllable fixtures; never an implicit fallback from live mode.        |
 
 The canonical registry contains BTC, ETH, SOL, XRP, DOGE, LINK, AVAX, ADA, SUI, AAVE, NEAR, and
 LTC against USD. The registry owns display metadata, precision, provider mappings, enablement,
@@ -71,7 +72,7 @@ removes a level. Every update is sorted/truncated using exact prices and validat
 CRC32 top-ten checksum. A mismatch clears the local book, reports `RECONNECTING`, and forces a new
 subscription/snapshot; knowingly corrupt depth is never served as live.
 
-Historical candles come from Kraken OHLC REST in live mode. Identical in-flight requests are
+Minute-and-above (`1m`, `5m`, `15m`, `1h`, `4h`, `1d`) historical candles come from Kraken OHLC REST in live mode. Identical in-flight requests are
 deduplicated and results are cached in process with a timeframe-aware 5–60 second TTL. Realtime
 Kraken 1-minute OHLC updates merge by UTC bucket timestamp, replacing an overlapping historical
 candle instead of appending a duplicate. Kraken permits one OHLC interval subscription per symbol;
@@ -79,6 +80,20 @@ larger visible current intervals therefore advance from genuine Kraken ticker ev
 REST bootstrap. Unsupported or missing periods are not synthesized. Volume is present only when
 supplied upstream. The bounded deterministic provider remains intentionally artificial and reports
 unavailable volume.
+
+Sub-minute candles (`1s`, `5s`, `15s`, `30s`) are built server-side from normalized genuine
+Kraken matched trades. One-second buckets use `floor(exchange timestamp / 1000)` on UTC epoch
+boundaries. Open is the first trade, high/low are the extrema, close is the last trade, and volume
+is the exact sum of Kraken base quantities. Older trades arriving after the active second are
+discarded rather than rewriting already-published history. Once a genuine seed price exists, a
+healthy but trade-free second carries the previous close as OHLC with zero volume; it never invents
+movement. Carry-forward stops when the trade feed is stale or disconnected.
+
+The canonical 1s stream is the sole child source for UTC-aligned 5s, 15s, and 30s bars. Bounded
+in-memory buffers retain 2 hours of 1s, 12 hours of 5s, 24 hours of 15s, and 48 hours of 30s bars
+per enabled symbol. A restart refills these buffers from new genuine activity; unavailable past
+seconds are not reconstructed. PostgreSQL does not store raw ticks. Fake/CI mode exposes the same
+intervals with explicit deterministic `SIMULATED` data.
 
 ## Execution and settlement policy
 
@@ -107,19 +122,21 @@ Normalized REST endpoints are:
 
 - `GET /v1/markets`
 - `GET /v1/markets/:symbol`
-- `GET /v1/markets/:symbol/candles?interval=1m|5m|15m|1h|4h|1d&limit=...`
+- `GET /v1/markets/:symbol/candles?interval=1s|5s|15s|30s|1m|5m|15m|1h|4h|1d&limit=...`
 - `GET /v1/markets/:symbol/book?depth=...`
 - `GET /v1/markets/:symbol/trades?limit=...`
 
-The existing `market:<symbol>` WebSocket topic carries normalized price, book, bounded trade,
-candle, and status events. Clients bootstrap from REST and resync after reconnect. Subscriptions
-are symbol-scoped; book rendering is batched in the browser without throttling authoritative
-ingestion.
+The `market:<symbol>` WebSocket topic carries normalized price, book, bounded trade, and market
+status events. Candles use `market:<symbol>:candles:<interval>` so a browser receives only its
+active chart stream; a timeframe or market change unsubscribes the old topic. Clients bootstrap
+from REST and resync after reconnect. `market.candle_status` reports a stale/unavailable
+sub-minute trade feed without changing execution-mark health.
 
 `GET /health/ready` reports nuanced market readiness without forcing process restarts for a
 temporary venue outage. `GET /health/market-data` exposes sanitized provider/market health plus
-component-to-provider provenance, canonical provider symbol mappings, fanout subscriber, topic,
-delivery, and latest-duration metrics. It never includes credentials or Pyth feed IDs. Market
+component-to-provider provenance, canonical provider symbol mappings, sub-minute last-trade and
+last-finalized times, bounded buffer sizes, aggregation lag, fanout subscriber, topic, delivery,
+and latest-duration metrics. It never includes credentials or Pyth feed IDs. Market
 snapshot responses also expose `dataMode` and the component provenance map so development clients
 cannot mistake deterministic fixtures for upstream data.
 

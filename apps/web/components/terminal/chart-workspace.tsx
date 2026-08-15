@@ -1,6 +1,11 @@
 'use client';
 
-import type { CandleIntervalDto, MarketSymbolDto, PositionDto } from '@trade-the-pool/shared';
+import {
+  CANDLE_INTERVALS,
+  type CandleIntervalDto,
+  type MarketSymbolDto,
+  type PositionDto,
+} from '@trade-the-pool/shared';
 import {
   BarChart3,
   CandlestickChart,
@@ -19,7 +24,7 @@ import {
 } from '@/lib/terminal-store';
 import { ChartBoundary, MarketChart } from '../market-chart';
 
-const intervals: CandleIntervalDto[] = ['1m', '5m', '15m', '1h', '4h', '1d'];
+const intervals: readonly CandleIntervalDto[] = CANDLE_INTERVALS;
 const indicatorLabels: Record<IndicatorKey, { label: string; description: string }> = {
   SMA: { label: 'SMA', description: 'Simple moving average' },
   EMA: { label: 'EMA', description: 'Exponential moving average' },

@@ -213,14 +213,22 @@ async function handleMessage(
   },
 ): Promise<void> {
   try {
-    await dependencies.rateLimiter.consume(
-      'ws-subscription',
-      request.authenticatedUser?.id ?? request.ip,
-      RATE_LIMITS.websocketSubscriptions,
-    );
     const parsed = realtimeSubscriptionSchema.safeParse(JSON.parse(raw));
-    if (!parsed.success) throw new Error('Malformed subscription message');
+    if (!parsed.success) {
+      await dependencies.rateLimiter.consume(
+        'ws-subscription',
+        request.authenticatedUser?.id ?? request.ip,
+        RATE_LIMITS.websocketSubscriptions,
+      );
+      throw new Error('Malformed subscription message');
+    }
     const { action, topic } = parsed.data;
+    if (action === 'subscribe')
+      await dependencies.rateLimiter.consume(
+        'ws-subscription',
+        request.authenticatedUser?.id ?? request.ip,
+        RATE_LIMITS.websocketSubscriptions,
+      );
     if (topic.startsWith('entry:')) {
       const session = await dependencies.authentication.resolveSession(
         request.authenticatedSession?.id,
@@ -232,7 +240,9 @@ async function handleMessage(
     }
     if (
       topic.startsWith('market:') &&
-      !SUPPORTED_SYMBOLS.some((symbol) => topic === `market:${symbol}`)
+      !SUPPORTED_SYMBOLS.some(
+        (symbol) => topic === `market:${symbol}` || topic.startsWith(`market:${symbol}:candles:`),
+      )
     )
       throw new Error('Unsupported market topic');
     if (action === 'subscribe') dependencies.hub.subscribe(socket, topic);
@@ -322,7 +332,7 @@ export function connectMarketRealtime(
       return;
     }
     if (event.type === 'candle') {
-      hub.publish(`market:${event.symbol}`, {
+      hub.publish(`market:${event.symbol}:candles:${event.interval}`, {
         type: 'market.candle',
         symbol: event.symbol,
         interval: event.interval,
@@ -332,8 +342,17 @@ export function connectMarketRealtime(
           high: priceToString(event.candle.high),
           low: priceToString(event.candle.low),
           close: priceToString(event.candle.close),
-          volume: event.candle.volume ? quantityToString(event.candle.volume) : null,
+          volume: event.candle.volume === null ? null : quantityToString(event.candle.volume),
         },
+      });
+      return;
+    }
+    if (event.type === 'candle-status') {
+      hub.publish(`market:${event.symbol}:candles:${event.interval}`, {
+        type: 'market.candle_status',
+        symbol: event.symbol,
+        interval: event.interval,
+        status: event.status,
       });
       return;
     }

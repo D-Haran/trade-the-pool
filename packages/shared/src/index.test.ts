@@ -18,6 +18,9 @@ import {
   MARKET_REGISTRY,
   SUPPORTED_MARKET_SYMBOLS,
   allowedLeverages,
+  CANDLE_INTERVALS,
+  candleIntervalSchema,
+  realtimeSubscriptionSchema,
 } from './index.js';
 
 describe('money', () => {
@@ -174,5 +177,31 @@ describe('canonical market registry', () => {
     expect(MARKET_REGISTRY['SUI-USD'].maxLeverage).toBe(2);
     expect(allowedLeverages('SOL-USD')).toEqual([1, 2, 3, 4]);
     expect(SUPPORTED_MARKET_SYMBOLS).not.toContain('PEPE-USD');
+  });
+});
+
+describe('canonical candle intervals', () => {
+  it('shares every supported interval across validation and scoped realtime topics', () => {
+    expect(CANDLE_INTERVALS).toEqual([
+      '1s',
+      '5s',
+      '15s',
+      '30s',
+      '1m',
+      '5m',
+      '15m',
+      '1h',
+      '4h',
+      '1d',
+    ]);
+    for (const interval of CANDLE_INTERVALS) {
+      expect(candleIntervalSchema.parse(interval)).toBe(interval);
+      expect(
+        realtimeSubscriptionSchema.parse({
+          action: 'subscribe',
+          topic: `market:BTC-USD:candles:${interval}`,
+        }).topic,
+      ).toBe(`market:BTC-USD:candles:${interval}`);
+    }
   });
 });

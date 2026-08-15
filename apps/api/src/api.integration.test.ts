@@ -215,6 +215,17 @@ describe('V1 HTTP API', () => {
     });
     expect(candles.json().provenance).toBe('deterministic-memory-v1');
 
+    const seconds = await app.inject({
+      method: 'GET',
+      url: '/v1/markets/BTC-USD/candles?interval=1s&limit=120',
+    });
+    expect(seconds.statusCode).toBe(200);
+    expect(seconds.json().data).toHaveLength(120);
+    expect(seconds.json().data.at(-1)).toMatchObject({
+      close: '100000.00000000',
+      volume: expect.stringMatching(/^\d+\.\d{8}$/),
+    });
+
     const book = await app.inject({
       method: 'GET',
       url: '/v1/markets/BTC-USD/book?depth=10',
@@ -743,6 +754,11 @@ describe('V1 WebSocket API', () => {
       type: 'subscription.acknowledged',
       topic: 'market:SOL-USD',
     });
+    socket.send(JSON.stringify({ action: 'subscribe', topic: 'market:SOL-USD:candles:5s' }));
+    expect(await next()).toMatchObject({
+      type: 'subscription.acknowledged',
+      topic: 'market:SOL-USD:candles:5s',
+    });
     market.advancePrice('SOL-USD', '205.00', new Date(Date.now() + 1));
     expect(await next()).toMatchObject({
       topic: 'market:SOL-USD',
@@ -758,11 +774,10 @@ describe('V1 WebSocket API', () => {
       topic: 'market:SOL-USD',
       event: { type: 'market.trades', symbol: 'SOL-USD' },
     });
-    for (const interval of ['1m', '5m', '15m', '1h', '4h', '1d'])
-      expect(await next()).toMatchObject({
-        topic: 'market:SOL-USD',
-        event: { type: 'market.candle', symbol: 'SOL-USD', interval },
-      });
+    expect(await next()).toMatchObject({
+      topic: 'market:SOL-USD:candles:5s',
+      event: { type: 'market.candle', symbol: 'SOL-USD', interval: '5s' },
+    });
     expect(await next()).toMatchObject({
       topic: 'market:SOL-USD',
       event: { type: 'market.book', symbol: 'SOL-USD', venue: 'Deterministic' },

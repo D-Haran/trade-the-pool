@@ -1,11 +1,7 @@
 'use client';
 
-import type {
-  CandleIntervalDto,
-  MarketCandleDto,
-  MarketSymbolDto,
-  PositionDto,
-} from '@trade-the-pool/shared';
+import type { CandleIntervalDto, MarketSymbolDto, PositionDto } from '@trade-the-pool/shared';
+import { CANDLE_INTERVAL_SECONDS } from '@trade-the-pool/shared';
 import {
   CandlestickSeries,
   ColorType,
@@ -13,13 +9,11 @@ import {
   LineStyle,
   LineSeries,
   createChart,
-  type CandlestickData,
-  type HistogramData,
   type IChartApi,
   type IPriceLine,
   type ISeriesApi,
-  type LineData,
   type SeriesType,
+  type Time,
   type UTCTimestamp,
 } from 'lightweight-charts';
 import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -29,135 +23,20 @@ import { formatPrice } from '@/lib/format';
 import { queryKeys } from '@/lib/query-keys';
 import type { ChartType, IndicatorPreferences } from '@/lib/terminal-store';
 import { realtimeClient } from '@/lib/realtime-client';
+import {
+  bollingerBands,
+  chartCandle,
+  exponentialMovingAverage,
+  formatChartTimestamp,
+  macd,
+  relativeStrengthIndex,
+  simpleMovingAverage,
+  volumeWeightedAveragePrice,
+  type ExactChartCandle,
+} from '@/lib/chart-analysis';
 import { ErrorState, LoadingState } from './ui/states';
 
-const intervalSeconds: Record<CandleIntervalDto, number> = {
-  '1m': 60,
-  '5m': 300,
-  '15m': 900,
-  '1h': 3_600,
-  '4h': 14_400,
-  '1d': 86_400,
-};
-
-type ExactChartCandle = CandlestickData<UTCTimestamp> & { volume: number | null };
 type OverlaySeries = ISeriesApi<'Line'>;
-
-function chartCandle(candle: MarketCandleDto): ExactChartCandle {
-  return {
-    time: Math.floor(new Date(candle.timestamp).getTime() / 1_000) as UTCTimestamp,
-    open: Number(candle.open),
-    high: Number(candle.high),
-    low: Number(candle.low),
-    close: Number(candle.close),
-    volume: candle.volume === null ? null : Number(candle.volume),
-  };
-}
-
-function simpleMovingAverage(
-  candles: ExactChartCandle[],
-  period: number,
-): LineData<UTCTimestamp>[] {
-  const points: LineData<UTCTimestamp>[] = [];
-  let sum = 0;
-  for (let index = 0; index < candles.length; index += 1) {
-    sum += candles[index].close;
-    if (index >= period) sum -= candles[index - period].close;
-    if (index >= period - 1) points.push({ time: candles[index].time, value: sum / period });
-  }
-  return points;
-}
-
-function exponentialMovingAverage(
-  candles: ExactChartCandle[],
-  period: number,
-): LineData<UTCTimestamp>[] {
-  if (!candles.length) return [];
-  const multiplier = 2 / (period + 1);
-  let value = candles[0].close;
-  return candles.map((candle, index) => {
-    value = index === 0 ? candle.close : (candle.close - value) * multiplier + value;
-    return { time: candle.time, value };
-  });
-}
-
-function bollingerBands(candles: ExactChartCandle[], period: number) {
-  const middle = simpleMovingAverage(candles, period);
-  const upper: LineData<UTCTimestamp>[] = [];
-  const lower: LineData<UTCTimestamp>[] = [];
-  for (let index = period - 1; index < candles.length; index += 1) {
-    const window = candles.slice(index - period + 1, index + 1);
-    const mean = middle[index - period + 1].value;
-    const deviation = Math.sqrt(
-      window.reduce((sum, candle) => sum + (candle.close - mean) ** 2, 0) / period,
-    );
-    upper.push({ time: candles[index].time, value: mean + deviation * 2 });
-    lower.push({ time: candles[index].time, value: mean - deviation * 2 });
-  }
-  return { middle, upper, lower };
-}
-
-function volumeWeightedAveragePrice(candles: ExactChartCandle[]): LineData<UTCTimestamp>[] {
-  let weighted = 0;
-  let volume = 0;
-  const points: LineData<UTCTimestamp>[] = [];
-  for (const candle of candles) {
-    if (candle.volume === null || candle.volume <= 0) continue;
-    weighted += ((candle.high + candle.low + candle.close) / 3) * candle.volume;
-    volume += candle.volume;
-    points.push({ time: candle.time, value: weighted / volume });
-  }
-  return points;
-}
-
-function relativeStrengthIndex(
-  candles: ExactChartCandle[],
-  period: number,
-): LineData<UTCTimestamp>[] {
-  if (candles.length <= period) return [];
-  let gains = 0;
-  let losses = 0;
-  for (let index = 1; index <= period; index += 1) {
-    const change = candles[index].close - candles[index - 1].close;
-    if (change >= 0) gains += change;
-    else losses -= change;
-  }
-  let averageGain = gains / period;
-  let averageLoss = losses / period;
-  const values: LineData<UTCTimestamp>[] = [];
-  for (let index = period; index < candles.length; index += 1) {
-    if (index > period) {
-      const change = candles[index].close - candles[index - 1].close;
-      averageGain = (averageGain * (period - 1) + Math.max(change, 0)) / period;
-      averageLoss = (averageLoss * (period - 1) + Math.max(-change, 0)) / period;
-    }
-    const value = averageLoss === 0 ? 100 : 100 - 100 / (1 + averageGain / averageLoss);
-    values.push({ time: candles[index].time, value });
-  }
-  return values;
-}
-
-function macd(candles: ExactChartCandle[]) {
-  const fast = exponentialMovingAverage(candles, 12);
-  const slow = exponentialMovingAverage(candles, 26);
-  const line = candles.map((candle, index) => ({
-    time: candle.time,
-    value: fast[index].value - slow[index].value,
-  }));
-  const signalMultiplier = 2 / 10;
-  let signalValue = line[0]?.value ?? 0;
-  const signal = line.map((point, index) => {
-    signalValue =
-      index === 0 ? point.value : (point.value - signalValue) * signalMultiplier + signalValue;
-    return { time: point.time, value: signalValue };
-  });
-  const histogram: HistogramData<UTCTimestamp>[] = line.map((point, index) => ({
-    time: point.time,
-    value: point.value - signal[index].value,
-    color: point.value >= signal[index].value ? 'rgba(79,214,161,.45)' : 'rgba(255,107,112,.42)',
-  }));
-  return { line, signal, histogram };
-}
 
 export function MarketChart({
   symbol,
@@ -188,7 +67,11 @@ export function MarketChart({
   const volumeSeries = useRef<ISeriesApi<'Histogram'> | null>(null);
   const positionLines = useRef<IPriceLine[]>([]);
   const [crosshair, setCrosshair] = useState<ExactChartCandle | null>(null);
+  const [subMinuteStatus, setSubMinuteStatus] = useState<'LIVE' | 'STALE' | 'UNAVAILABLE' | null>(
+    null,
+  );
   const indicatorKey = useMemo(() => JSON.stringify(indicators), [indicators]);
+  const subMinute = CANDLE_INTERVAL_SECONDS[interval] < 60;
   const candles = useQuery({
     queryKey: queryKeys.candles(symbol, interval),
     queryFn: ({ signal }) => api.candles(symbol, interval, 240, signal),
@@ -247,7 +130,15 @@ export function MarketChart({
       grid: { vertLines: { color: '#141a20' }, horzLines: { color: '#141a20' } },
       crosshair: { vertLine: { color: '#53616d' }, horzLine: { color: '#53616d' } },
       rightPriceScale: { borderColor: '#202830', scaleMargins: { top: 0.1, bottom: 0.08 } },
-      timeScale: { borderColor: '#202830', timeVisible: true, secondsVisible: false },
+      timeScale: {
+        borderColor: '#202830',
+        timeVisible: true,
+        secondsVisible: subMinute,
+        barSpacing: subMinute ? 6 : 5,
+      },
+      localization: {
+        timeFormatter: (time: Time) => formatChartTimestamp(Number(time), subMinute),
+      },
       handleScale: true,
       handleScroll: true,
     });
@@ -344,7 +235,7 @@ export function MarketChart({
       volumeSeries.current = null;
       positionLines.current = [];
     };
-  }, [chartType, indicatorKey]);
+  }, [chartType, indicatorKey, subMinute]);
 
   useEffect(() => {
     const series = mainSeries.current;
@@ -401,20 +292,33 @@ export function MarketChart({
         data.map((candle) => ({ time: candle.time, value: candle.close })),
       );
     updateIndicators();
-    chart.current?.timeScale().fitContent();
+    const visibleBars = interval === '1s' ? 180 : 240;
+    chart.current?.timeScale().setVisibleLogicalRange({
+      from: Math.max(0, data.length - visibleBars),
+      to: Math.max(visibleBars, data.length - 1) + 2,
+    });
   }, [candles.data, symbol, interval, chartType, indicatorKey]);
 
   useEffect(() => {
-    return realtimeClient.subscribe(`market:${symbol}`, (event) => {
+    setSubMinuteStatus(null);
+    const handle = (event: Parameters<Parameters<typeof realtimeClient.subscribe>[1]>[0]) => {
+      if (event.type === 'market.candle_status') {
+        if (event.symbol === symbol && event.interval === interval)
+          setSubMinuteStatus(event.status);
+        return;
+      }
       if (event.type !== 'market.candle' && event.type !== 'market.price') return;
       if (event.symbol !== symbol || !mainSeries.current) return;
       let next: ExactChartCandle;
       if (event.type === 'market.candle') {
         if (event.interval !== interval) return;
+        if (subMinute) setSubMinuteStatus('LIVE');
         next = chartCandle(event.candle);
-      } else if (event.type === 'market.price') {
+      } else if (event.type === 'market.price' && !subMinute) {
         const seconds = Math.floor(new Date(event.marketTimestamp).getTime() / 1_000);
-        const bucket = Math.floor(seconds / intervalSeconds[interval]) * intervalSeconds[interval];
+        const bucket =
+          Math.floor(seconds / CANDLE_INTERVAL_SECONDS[interval]) *
+          CANDLE_INTERVAL_SECONDS[interval];
         const price = Number(event.price);
         const current = candleState.current.at(-1);
         next =
@@ -445,8 +349,20 @@ export function MarketChart({
       else
         (mainSeries.current as ISeriesApi<'Line'>).update({ time: next.time, value: next.close });
       updateIndicators();
-    });
-  }, [interval, symbol, chartType, indicatorKey]);
+    };
+    let unsubscribeCandle: () => void = () => undefined;
+    const subscriptionTimer = window.setTimeout(() => {
+      unsubscribeCandle = realtimeClient.subscribe(`market:${symbol}:candles:${interval}`, handle);
+    }, 50);
+    const unsubscribePrice = subMinute
+      ? () => undefined
+      : realtimeClient.subscribe(`market:${symbol}`, handle);
+    return () => {
+      window.clearTimeout(subscriptionTimer);
+      unsubscribeCandle();
+      unsubscribePrice();
+    };
+  }, [interval, symbol, chartType, indicatorKey, subMinute]);
 
   useEffect(() => chart.current?.timeScale().fitContent(), [resetToken]);
 
@@ -468,6 +384,16 @@ export function MarketChart({
       {candles.isError ? (
         <div className="chart-overlay">
           <ErrorState title="Chart history unavailable" retry={() => candles.refetch()} />
+        </div>
+      ) : null}
+      {!candles.isLoading && !candles.isError && subMinute && candles.data?.data.length === 0 ? (
+        <div className="chart-overlay">
+          <ErrorState title={`${interval} market data is temporarily unavailable`} />
+        </div>
+      ) : null}
+      {subMinute && subMinuteStatus && subMinuteStatus !== 'LIVE' && candles.data?.data.length ? (
+        <div className="chart-overlay">
+          <ErrorState title={`${interval} market data is temporarily unavailable`} />
         </div>
       ) : null}
       <div

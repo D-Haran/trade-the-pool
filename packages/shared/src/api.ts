@@ -6,6 +6,32 @@ export const moneyStringSchema = z.string().regex(/^\d+(?:\.\d{1,2})?$/);
 export const signedMoneyStringSchema = z.string().regex(/^-?\d+(?:\.\d{1,2})?$/);
 export const decimalStringSchema = z.string().regex(/^\d+(?:\.\d{1,8})?$/);
 export const marketSymbolSchema = z.enum(SUPPORTED_MARKET_SYMBOLS);
+export const CANDLE_INTERVALS = [
+  '1s',
+  '5s',
+  '15s',
+  '30s',
+  '1m',
+  '5m',
+  '15m',
+  '1h',
+  '4h',
+  '1d',
+] as const;
+export const SUB_MINUTE_CANDLE_INTERVALS = ['1s', '5s', '15s', '30s'] as const;
+export const CANDLE_INTERVAL_SECONDS: Record<(typeof CANDLE_INTERVALS)[number], number> = {
+  '1s': 1,
+  '5s': 5,
+  '15s': 15,
+  '30s': 30,
+  '1m': 60,
+  '5m': 300,
+  '15m': 900,
+  '1h': 3_600,
+  '4h': 14_400,
+  '1d': 86_400,
+};
+export const candleIntervalSchema = z.enum(CANDLE_INTERVALS);
 export const tournamentStatusSchema = z.enum([
   'DRAFT',
   'REGISTRATION_OPEN',
@@ -104,7 +130,11 @@ export const positionProtectionRequestSchema = z
 export const realtimeSubscriptionSchema = z
   .object({
     action: z.enum(['subscribe', 'unsubscribe']),
-    topic: z.string().regex(/^(market:[A-Z]+-USD|tournament:[0-9a-f-]+|entry:[0-9a-f-]+)$/),
+    topic: z
+      .string()
+      .regex(
+        /^(market:[A-Z]+-USD(?::candles:(?:1s|5s|15s|30s|1m|5m|15m|1h|4h|1d))?|tournament:[0-9a-f-]+|entry:[0-9a-f-]+)$/,
+      ),
   })
   .strict();
 
@@ -156,7 +186,7 @@ export const marketTradesEventSchema = z.object({
 export const marketCandleEventSchema = z.object({
   type: z.literal('market.candle'),
   symbol: marketSymbolSchema,
-  interval: z.enum(['1m', '5m', '15m', '1h', '4h', '1d']),
+  interval: candleIntervalSchema,
   candle: z.object({
     timestamp: z.string().datetime(),
     open: z.string(),
@@ -165,6 +195,12 @@ export const marketCandleEventSchema = z.object({
     close: z.string(),
     volume: z.string().nullable(),
   }),
+});
+export const marketCandleStatusEventSchema = z.object({
+  type: z.literal('market.candle_status'),
+  symbol: marketSymbolSchema,
+  interval: z.enum(SUB_MINUTE_CANDLE_INTERVALS),
+  status: z.enum(['LIVE', 'STALE', 'UNAVAILABLE']),
 });
 export const marketStatusEventSchema = z.object({
   type: z.literal('market.status'),
@@ -208,6 +244,7 @@ export const realtimeEventSchema = z.discriminatedUnion('type', [
   marketBookEventSchema,
   marketTradesEventSchema,
   marketCandleEventSchema,
+  marketCandleStatusEventSchema,
   marketStatusEventSchema,
   tournamentPrizePoolUpdatedEventSchema,
   tournamentStatusChangedEventSchema,
@@ -467,6 +504,7 @@ export type MarketSnapshotDto = {
     statistics24h: string;
     historicalCandles: string;
     realtimeCandles: string;
+    subMinuteCandles?: string;
     orderBook: string;
     recentTrades: string;
     authoritativeMark: string;
@@ -487,7 +525,7 @@ export type MarketSnapshotDto = {
   };
 };
 
-export type CandleIntervalDto = '1m' | '5m' | '15m' | '1h' | '4h' | '1d';
+export type CandleIntervalDto = (typeof CANDLE_INTERVALS)[number];
 
 export type MarketCandleDto = {
   timestamp: string;

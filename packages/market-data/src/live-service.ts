@@ -1,4 +1,4 @@
-import type { Price } from '@trade-the-pool/shared';
+import { CANDLE_INTERVAL_SECONDS, type Price } from '@trade-the-pool/shared';
 import {
   CoinbaseMarketDataAdapter,
   KrakenMarketDataAdapter,
@@ -28,6 +28,12 @@ import {
   type ProviderHealth,
   type StartableMarketDataProvider,
 } from './types.js';
+import {
+  DEFAULT_SUB_MINUTE_RETENTION,
+  SUB_MINUTE_INTERVAL_MS,
+  SubMinuteCandleAggregator,
+  type SubMinuteInterval,
+} from './sub-minute-candles.js';
 
 export type FreshnessConfiguration = {
   authoritativeDelayedMs: number;
@@ -95,6 +101,11 @@ export class LiveMarketDataService implements MarketDataProvider, StartableMarke
   readonly #eventListeners = new Set<MarketEventListener>();
   readonly #unsubscribers: Array<() => void> = [];
   readonly #lastStatuses = new Map<MarketSymbol, MarketFreshnessStatus>();
+  readonly #lastSubMinuteStatuses = new Map<
+    string,
+    { status: 'LIVE' | 'STALE' | 'UNAVAILABLE'; publishedAt: number }
+  >();
+  readonly #subMinute: SubMinuteCandleAggregator;
   #statusTimer: NodeJS.Timeout | null = null;
   #started = false;
 
@@ -106,6 +117,9 @@ export class LiveMarketDataService implements MarketDataProvider, StartableMarke
     },
     private readonly freshness: FreshnessConfiguration = DEFAULT_FRESHNESS_CONFIGURATION,
   ) {
+    this.#subMinute = new SubMinuteCandleAggregator(SUPPORTED_SYMBOLS, (symbol, interval, candle) =>
+      this.publish({ type: 'candle', symbol, interval, candle }),
+    );
     for (const adapter of Object.values(adapters))
       this.#providerHealth.set(adapter.name, adapter.getHealth());
     for (const symbol of SUPPORTED_SYMBOLS) {
@@ -121,7 +135,17 @@ export class LiveMarketDataService implements MarketDataProvider, StartableMarke
       this.#unsubscribers.push(adapter.subscribe((event) => this.onUpstreamEvent(event)));
       adapter.start();
     }
-    this.#statusTimer = setInterval(() => this.publishStatusChanges(), 1_000);
+    this.#statusTimer = setInterval(() => {
+      const now = Date.now();
+      if (this.#providerHealth.get(this.adapters.primary.name)?.connection === 'CONNECTED')
+        for (const symbol of SUPPORTED_SYMBOLS) {
+          const lastTrade = this.#subMinute.diagnostics(symbol, now).lastTradeReceived;
+          if (lastTrade && now - lastTrade.getTime() <= this.freshness.exchangeStaleMs)
+            this.#subMinute.advanceSymbolTo(symbol, new Date(now));
+        }
+      this.publishStatusChanges();
+      this.publishSubMinuteStatusChanges(now);
+    }, 250);
     this.#statusTimer.unref();
   }
 
@@ -301,6 +325,8 @@ export class LiveMarketDataService implements MarketDataProvider, StartableMarke
   ): Promise<MarketCandle[]> {
     if (!Number.isInteger(limit) || limit < 1 || limit > 500)
       throw new Error('Invalid candle request');
+    if (interval in SUB_MINUTE_INTERVAL_MS)
+      return this.#subMinute.getCandles(symbol, interval as SubMinuteInterval, limit);
     const key = `${symbol}:${interval}:${limit}`;
     const cached = this.#candles.get(key);
     if (cached && cached.expiresAt > Date.now()) return this.cloneCandles(cached.candles);
@@ -330,6 +356,7 @@ export class LiveMarketDataService implements MarketDataProvider, StartableMarke
         statistics24h: this.adapters.primary.name,
         historicalCandles: `${this.adapters.primary.name}:rest-ohlc`,
         realtimeCandles: this.adapters.primary.name,
+        subMinuteCandles: `${this.adapters.primary.name}:matched-trades`,
         orderBook: this.adapters.primary.name,
         recentTrades: this.adapters.primary.name,
         authoritativeMark: this.adapters.authoritative.name,
@@ -342,6 +369,7 @@ export class LiveMarketDataService implements MarketDataProvider, StartableMarke
         pythFeedConfigured: true,
       })),
       providers: [...this.#providerHealth.values()].map((health) => ({ ...health })),
+      subMinute: SUPPORTED_SYMBOLS.map((symbol) => this.#subMinute.diagnostics(symbol, now)),
       markets: SUPPORTED_SYMBOLS.map((symbol) => {
         const view = this.getMarketView(symbol);
         return {
@@ -390,8 +418,19 @@ export class LiveMarketDataService implements MarketDataProvider, StartableMarke
     }
     if (event.type === 'trades') {
       const current = this.#trades.get(event.symbol) ?? [];
+      const existingKeys = new Set(current.map((trade) => `${trade.venue}:${trade.id}`));
+      const now = Date.now();
+      const incoming = event.trades.filter(
+        (trade) =>
+          !existingKeys.has(`${trade.venue}:${trade.id}`) &&
+          trade.price > 0n &&
+          trade.quantity >= 0n &&
+          Number.isFinite(trade.timestamp.getTime()) &&
+          trade.timestamp.getTime() <= now + this.freshness.futureTimestampToleranceMs &&
+          trade.timestamp.getTime() >= now - DEFAULT_SUB_MINUTE_RETENTION['1s'] * 1_000,
+      );
       const seen = new Set<string>();
-      const merged = [...event.trades, ...current]
+      const merged = [...incoming, ...current]
         .filter((trade) => {
           const key = `${trade.venue}:${trade.id}`;
           if (seen.has(key)) return false;
@@ -401,7 +440,8 @@ export class LiveMarketDataService implements MarketDataProvider, StartableMarke
         .sort((left, right) => +right.timestamp - +left.timestamp)
         .slice(0, 100);
       this.#trades.set(event.symbol, merged);
-      this.publish({ type: 'trades', symbol: event.symbol, trades: event.trades });
+      this.#subMinute.ingestTrades(event.symbol, incoming);
+      if (incoming.length) this.publish({ type: 'trades', symbol: event.symbol, trades: incoming });
       return;
     }
     this.mergeRealtimeCandle(event.symbol, event.interval, event.candle);
@@ -434,6 +474,27 @@ export class LiveMarketDataService implements MarketDataProvider, StartableMarke
       this.publish({ type: 'status', symbol, status });
       if (this.#exchange.has(symbol) || this.#authoritative.has(symbol))
         this.publish({ type: 'price', view: this.getMarketView(symbol) });
+    }
+  }
+
+  private publishSubMinuteStatusChanges(now: number): void {
+    const connected =
+      this.#providerHealth.get(this.adapters.primary.name)?.connection === 'CONNECTED';
+    for (const symbol of SUPPORTED_SYMBOLS) {
+      const lastTrade = this.#subMinute.diagnostics(symbol, now).lastTradeReceived;
+      const status =
+        !connected || !lastTrade
+          ? 'UNAVAILABLE'
+          : now - lastTrade.getTime() > this.freshness.exchangeStaleMs
+            ? 'STALE'
+            : 'LIVE';
+      for (const interval of ['1s', '5s', '15s', '30s'] as const) {
+        const key = `${symbol}:${interval}`;
+        const previous = this.#lastSubMinuteStatuses.get(key);
+        if (previous?.status === status && now - previous.publishedAt < 5_000) continue;
+        this.#lastSubMinuteStatuses.set(key, { status, publishedAt: now });
+        this.publish({ type: 'candle-status', symbol, interval, status });
+      }
     }
   }
 
@@ -475,15 +536,7 @@ export class LiveMarketDataService implements MarketDataProvider, StartableMarke
   }
 
   private intervalMs(interval: CandleInterval): number {
-    const values: Record<CandleInterval, number> = {
-      '1m': 60_000,
-      '5m': 300_000,
-      '15m': 900_000,
-      '1h': 3_600_000,
-      '4h': 14_400_000,
-      '1d': 86_400_000,
-    };
-    return values[interval];
+    return CANDLE_INTERVAL_SECONDS[interval] * 1_000;
   }
 }
 

@@ -7,6 +7,7 @@ import websocket from '@fastify/websocket';
 import { sql } from 'drizzle-orm';
 import { users, type Database } from '@trade-the-pool/database';
 import {
+  candleIntervalSchema,
   marketSymbolSchema,
   decimalToString,
   orderRequestSchema,
@@ -891,7 +892,7 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
   const marketParameterSchema = z.object({ symbol: marketSymbolSchema }).strict();
   const candleQuerySchema = z
     .object({
-      interval: z.enum(['1m', '5m', '15m', '1h', '4h', '1d']).default('1m'),
+      interval: candleIntervalSchema.default('1m'),
       limit: z.coerce.number().int().min(1).max(500).default(240),
     })
     .strict();
@@ -932,6 +933,7 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
         statistics24h: visible.source,
         historicalCandles: visible.source,
         realtimeCandles: visible.source,
+        subMinuteCandles: visible.source,
         orderBook: visible.source,
         recentTrades: visible.source,
         authoritativeMark: mark?.source ?? visible.source,
@@ -1003,11 +1005,14 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
           high: priceToString(candle.high),
           low: priceToString(candle.low),
           close: priceToString(candle.close),
-          volume: candle.volume ? quantityToString(candle.volume) : null,
+          volume: candle.volume === null ? null : quantityToString(candle.volume),
         })),
-        provenance:
-          (market as Partial<MarketDataProvider>).getHealth?.().components.historicalCandles ??
-          null,
+        provenance: (() => {
+          const components = (market as Partial<MarketDataProvider>).getHealth?.().components;
+          return interval.endsWith('s')
+            ? (components?.subMinuteCandles ?? null)
+            : (components?.historicalCandles ?? null);
+        })(),
       };
     },
   );
