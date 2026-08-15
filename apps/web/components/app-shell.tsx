@@ -14,7 +14,7 @@ const links = [
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   return (
-    <div className="app-frame">
+    <div className={cn('app-frame', pathname.includes('/trade/') && 'app-frame--terminal')}>
       <header className="topbar">
         <div className="topbar__inner">
           <Link href="/" className="wordmark" aria-label="Trade the Pool home">

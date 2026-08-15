@@ -4,17 +4,41 @@ import {
   type MarketSymbolDto,
 } from '@trade-the-pool/shared';
 import { Activity, ScanLine } from 'lucide-react';
+import { memo } from 'react';
 import { cn } from '@/lib/cn';
-import { formatPrice } from '@/lib/format';
+import { formatBasisPoints, formatPrice } from '@/lib/format';
 import { scanMarkets } from '@/lib/market-scanner';
 import { AssetIcon } from './asset-icon';
 
-function change(value: string | null): string {
-  if (value === null) return '—';
-  const exact = BigInt(value);
-  const sign = exact > 0n ? '+' : '';
-  return `${sign}${(Number(exact) / 100).toFixed(2)}%`;
-}
+const MarketTile = memo(function MarketTile({
+  market,
+  active,
+  onSelect,
+}: {
+  market: MarketSnapshotDto;
+  active: boolean;
+  onSelect: (symbol: MarketSymbolDto) => void;
+}) {
+  return (
+    <button className={active ? 'is-active' : ''} onClick={() => onSelect(market.symbol)}>
+      <AssetIcon symbol={market.symbol} size={20} />
+      <span>
+        <strong>{market.metadata.baseCurrency}</strong>
+        <small className="tabular">{formatPrice(market.price, market.symbol)}</small>
+      </span>
+      <b
+        className={cn(
+          'tabular',
+          market.change24hBasisPoints?.startsWith('-')
+            ? 'negative'
+            : market.change24hBasisPoints && market.change24hBasisPoints !== '0' && 'positive',
+        )}
+      >
+        {formatBasisPoints(market.change24hBasisPoints)}
+      </b>
+    </button>
+  );
+});
 
 export function MarketActivityStrip({
   markets,
@@ -38,25 +62,12 @@ export function MarketActivityStrip({
         </div>
         <div className="market-watchlist-scroll">
           {ordered.map((market) => (
-            <button
+            <MarketTile
               key={market.symbol}
-              className={market.symbol === activeSymbol ? 'is-active' : ''}
-              onClick={() => onSelect(market.symbol)}
-            >
-              <AssetIcon symbol={market.symbol} size={20} />
-              <span>
-                <strong>{market.metadata.baseCurrency}</strong>
-                <small className="tabular">{formatPrice(market.price, market.symbol)}</small>
-              </span>
-              <b
-                className={cn(
-                  'tabular',
-                  market.change24hBasisPoints?.startsWith('-') ? 'negative' : 'positive',
-                )}
-              >
-                {change(market.change24hBasisPoints)}
-              </b>
-            </button>
+              market={market}
+              active={market.symbol === activeSymbol}
+              onSelect={onSelect}
+            />
           ))}
         </div>
       </div>

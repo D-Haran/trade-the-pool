@@ -3,6 +3,7 @@ import {
   formatBaseVolume,
   formatCompactQuantity,
   formatCompactUsd,
+  formatMultiple,
   formatPercent,
   formatPrice,
   formatQuantity,
@@ -22,6 +23,8 @@ describe('financial display formatting', () => {
     expect(formatPrice('0.12345678')).toBe('$0.123457');
     expect(formatQuantity('24.81600000')).toBe('24.816');
     expect(formatCompactUsd('82410.00')).toBe('$82.4K');
+    expect(formatMultiple('42531.63', '9994.73')).toBe('4.26x');
+    expect(formatMultiple('1.00', '0.00')).toBe('—');
   });
 
   it('uses centralized market-aware price, quantity, and volume precision', () => {

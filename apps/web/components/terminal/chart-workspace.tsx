@@ -16,7 +16,7 @@ import {
   SlidersHorizontal,
   X,
 } from 'lucide-react';
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import {
   useTerminalStore,
   type ChartType,
@@ -45,7 +45,8 @@ function IndicatorManager({
   indicators: IndicatorPreferences;
   onClose: () => void;
 }) {
-  const { setIndicator, resetIndicators } = useTerminalStore();
+  const setIndicator = useTerminalStore((state) => state.setIndicator);
+  const resetIndicators = useTerminalStore((state) => state.resetIndicators);
   const [search, setSearch] = useState('');
   const keys = (Object.keys(indicatorLabels) as IndicatorKey[]).filter((key) =>
     indicatorLabels[key].label.toLowerCase().includes(search.toLowerCase()),
@@ -111,14 +112,18 @@ function IndicatorManager({
   );
 }
 
-export function ChartWorkspace({
+function ChartWorkspaceComponent({
   symbol,
   position,
 }: {
   symbol: MarketSymbolDto;
   position: PositionDto | null;
 }) {
-  const { interval, setInterval, chartType, setChartType, indicators } = useTerminalStore();
+  const interval = useTerminalStore((state) => state.interval);
+  const setInterval = useTerminalStore((state) => state.setInterval);
+  const chartType = useTerminalStore((state) => state.chartType);
+  const setChartType = useTerminalStore((state) => state.setChartType);
+  const indicators = useTerminalStore((state) => state.indicators);
   const [indicatorOpen, setIndicatorOpen] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [resetToken, setResetToken] = useState(0);
@@ -216,3 +221,6 @@ export function ChartWorkspace({
     </section>
   );
 }
+
+export const ChartWorkspace = memo(ChartWorkspaceComponent);
+ChartWorkspace.displayName = 'ChartWorkspace';

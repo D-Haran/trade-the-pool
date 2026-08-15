@@ -7,6 +7,7 @@ export type IndicatorKey = 'SMA' | 'EMA' | 'VWAP' | 'BOLLINGER' | 'RSI' | 'MACD'
 export type IndicatorPreferences = Record<IndicatorKey, { enabled: boolean; period: number }>;
 export type TerminalTab =
   'POSITIONS' | 'OPEN_ORDERS' | 'ORDER_HISTORY' | 'TRADES' | 'PERFORMANCE' | 'LEADERBOARD';
+export type OrderPanelTab = 'ORDER' | 'SELL';
 
 const defaultIndicators: IndicatorPreferences = {
   SMA: { enabled: false, period: 20 },
@@ -24,6 +25,7 @@ type TerminalState = {
   chartType: ChartType;
   indicators: IndicatorPreferences;
   lowerTab: TerminalTab;
+  orderPanelTab: OrderPanelTab;
   hotkeysEnabled: boolean;
   confirmationsEnabled: boolean;
   setSymbol: (symbol: MarketSymbolDto) => void;
@@ -32,6 +34,7 @@ type TerminalState = {
   setIndicator: (key: IndicatorKey, value: Partial<{ enabled: boolean; period: number }>) => void;
   resetIndicators: () => void;
   setLowerTab: (lowerTab: TerminalTab) => void;
+  setOrderPanelTab: (orderPanelTab: OrderPanelTab) => void;
   setHotkeysEnabled: (enabled: boolean) => void;
   setConfirmationsEnabled: (enabled: boolean) => void;
 };
@@ -44,6 +47,7 @@ export const useTerminalStore = create<TerminalState>()(
       chartType: 'CANDLES',
       indicators: defaultIndicators,
       lowerTab: 'POSITIONS',
+      orderPanelTab: 'ORDER',
       hotkeysEnabled: true,
       confirmationsEnabled: true,
       setSymbol: (symbol) => set({ symbol }),
@@ -55,6 +59,7 @@ export const useTerminalStore = create<TerminalState>()(
         })),
       resetIndicators: () => set({ indicators: defaultIndicators }),
       setLowerTab: (lowerTab) => set({ lowerTab }),
+      setOrderPanelTab: (orderPanelTab) => set({ orderPanelTab }),
       setHotkeysEnabled: (hotkeysEnabled) => set({ hotkeysEnabled }),
       setConfirmationsEnabled: (confirmationsEnabled) => set({ confirmationsEnabled }),
     }),

@@ -5,15 +5,17 @@ import type {
   EntryDetailDto,
   MarketSnapshotDto,
   MarketSymbolDto,
+  PositionDto,
   ProfessionalOrderRequestDto,
 } from '@trade-the-pool/shared';
-import { Info, Keyboard, Settings2, ShieldCheck } from 'lucide-react';
+import { Keyboard, Settings2, ShieldCheck } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { cn } from '@/lib/cn';
-import { formatPrice, formatUsd } from '@/lib/format';
+import { formatPercent, formatPrice, formatQuantity, formatUsd, isPositive } from '@/lib/format';
 import { useTerminalStore } from '@/lib/terminal-store';
 import { marginFromPositionSize, positionSizeFromMargin } from '@/lib/order-sizing';
 import { Button } from '../ui/button';
+import { AssetIcon } from './asset-icon';
 
 type PositionSide = 'LONG' | 'SHORT';
 type OrderType = 'MARKET' | 'LIMIT' | 'STOP_MARKET';
@@ -24,36 +26,65 @@ function validPositive(value: string, places: number): boolean {
   return new RegExp(`^\\d+(?:\\.\\d{1,${places}})?$`).test(value) && !/^0+(?:\.0+)?$/.test(value);
 }
 
+function OrderTypeTabs({
+  value,
+  onChange,
+}: {
+  value: OrderType;
+  onChange: (value: OrderType) => void;
+}) {
+  return (
+    <div className="order-type-tabs" aria-label="Order type">
+      {(['MARKET', 'LIMIT', 'STOP_MARKET'] as OrderType[]).map((type) => (
+        <button
+          key={type}
+          className={type === value ? 'is-active' : ''}
+          onClick={() => onChange(type)}
+        >
+          {type === 'STOP_MARKET' ? 'Stop' : type[0] + type.slice(1).toLowerCase()}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function OrderTicket({
   account,
   symbol,
   market,
+  position,
   disabled,
-  disabledReason,
   pending,
   onSubmit,
 }: {
   account: EntryDetailDto;
   symbol: MarketSymbolDto;
   market?: MarketSnapshotDto;
+  position: PositionDto | null;
   disabled: boolean;
-  disabledReason: string | null;
   pending: boolean;
   onSubmit: (body: ProfessionalOrderRequestDto) => void;
 }) {
   const [positionSide, setPositionSide] = useState<PositionSide>('LONG');
   const [orderType, setOrderType] = useState<OrderType>('MARKET');
+  const [closeOrderType, setCloseOrderType] = useState<OrderType>('MARKET');
+  const [closePercentage, setClosePercentage] = useState<(typeof percentages)[number]>(10_000);
   const [sizingMode, setSizingMode] = useState<SizingMode>('MARGIN');
   const [sizeAmount, setSizeAmount] = useState('500.00');
   const [leverage, setLeverage] = useState(1);
   const [orderPrice, setOrderPrice] = useState('');
+  const [closePrice, setClosePrice] = useState('');
   const [riskOpen, setRiskOpen] = useState(false);
   const [takeProfitPrice, setTakeProfitPrice] = useState('');
   const [stopLossPrice, setStopLossPrice] = useState('');
   const [confirming, setConfirming] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const { hotkeysEnabled, confirmationsEnabled, setHotkeysEnabled, setConfirmationsEnabled } =
-    useTerminalStore();
+  const ticketTab = useTerminalStore((state) => state.orderPanelTab);
+  const setTicketTab = useTerminalStore((state) => state.setOrderPanelTab);
+  const hotkeysEnabled = useTerminalStore((state) => state.hotkeysEnabled);
+  const confirmationsEnabled = useTerminalStore((state) => state.confirmationsEnabled);
+  const setHotkeysEnabled = useTerminalStore((state) => state.setHotkeysEnabled);
+  const setConfirmationsEnabled = useTerminalStore((state) => state.setConfirmationsEnabled);
 
   const availableMargin = Number(account.availableMargin);
   const buyingPower = Math.max(0, availableMargin * leverage);
@@ -78,12 +109,13 @@ export function OrderTicket({
         ? Math.max(0, mark * (1 - 0.8 / leverage))
         : mark * (1 + 0.8 / leverage)
       : null;
-  const invalid =
+  const invalidOpen =
     !validSize ||
     estimatedMargin + estimatedFee > availableMargin ||
     (orderType !== 'MARKET' && !validPositive(orderPrice, 8)) ||
     (takeProfitPrice.length > 0 && !validPositive(takeProfitPrice, 8)) ||
     (stopLossPrice.length > 0 && !validPositive(stopLossPrice, 8));
+  const invalidClose = !position || (closeOrderType !== 'MARKET' && !validPositive(closePrice, 8));
 
   const presets = useMemo(
     () =>
@@ -96,7 +128,7 @@ export function OrderTicket({
   );
 
   useEffect(() => {
-    if (!hotkeysEnabled) return;
+    if (!hotkeysEnabled || ticketTab !== 'ORDER') return;
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       if (target?.matches('input, textarea, select, [contenteditable="true"]')) return;
@@ -108,29 +140,50 @@ export function OrderTicket({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [hotkeysEnabled, presets]);
+  }, [hotkeysEnabled, presets, ticketTab]);
 
   useEffect(() => {
     setConfirming(false);
     setOrderPrice('');
+    setClosePrice('');
+    setClosePercentage(10_000);
     setRiskOpen(false);
     setTakeProfitPrice('');
     setStopLossPrice('');
     setLeverage((current) => Math.min(current, MARKET_REGISTRY[symbol].maxLeverage));
   }, [symbol, account.id]);
 
-  const submit = () => {
-    if (invalid || disabled || pending) return;
+  const changeSizingMode = (next: SizingMode) => {
+    if (next === sizingMode) return;
+    if (validSize)
+      setSizeAmount(
+        next === 'POSITION_SIZE'
+          ? positionSizeFromMargin(sizeAmount, leverage)
+          : marginFromPositionSize(sizeAmount, leverage),
+      );
+    setSizingMode(next);
+    setConfirming(false);
+  };
+
+  const openExecution =
+    orderType === 'MARKET'
+      ? ({ type: 'MARKET' } as const)
+      : orderType === 'LIMIT'
+        ? ({ type: 'LIMIT', limitPrice: orderPrice } as const)
+        : ({ type: 'STOP_MARKET', stopPrice: orderPrice } as const);
+  const closeExecution =
+    closeOrderType === 'MARKET'
+      ? ({ type: 'MARKET' } as const)
+      : closeOrderType === 'LIMIT'
+        ? ({ type: 'LIMIT', limitPrice: closePrice } as const)
+        : ({ type: 'STOP_MARKET', stopPrice: closePrice } as const);
+
+  const submitOpen = () => {
+    if (invalidOpen || disabled || pending) return;
     if (confirmationsEnabled && !confirming) {
       setConfirming(true);
       return;
     }
-    const execution =
-      orderType === 'MARKET'
-        ? ({ type: 'MARKET' } as const)
-        : orderType === 'LIMIT'
-          ? ({ type: 'LIMIT', limitPrice: orderPrice } as const)
-          : ({ type: 'STOP_MARKET', stopPrice: orderPrice } as const);
     onSubmit({
       entryId: account.id,
       symbol,
@@ -138,22 +191,54 @@ export function OrderTicket({
       positionSide,
       sizing: { type: sizingMode, amount: sizeAmount },
       leverage,
-      execution,
+      execution: openExecution,
       ...(takeProfitPrice ? { takeProfitPrice } : {}),
       ...(stopLossPrice ? { stopLossPrice } : {}),
     });
     setConfirming(false);
   };
 
+  const submitClose = () => {
+    if (!position || invalidClose || disabled || pending) return;
+    if (confirmationsEnabled && !confirming) {
+      setConfirming(true);
+      return;
+    }
+    onSubmit({
+      entryId: account.id,
+      symbol,
+      intent: 'CLOSE',
+      positionSide: position.side,
+      amount: { type: 'PERCENTAGE', percentageBps: closePercentage },
+      execution: closeExecution,
+    });
+    setConfirming(false);
+  };
+
   return (
     <aside className="professional-order-ticket">
-      <div className="ticket-account-context">
-        <div>
-          <span>{account.tournament.name}</span>
-          <strong>ENTRY #{account.sequenceNumber}</strong>
+      <div className="ticket-primary-head">
+        <div className="ticket-primary-tabs" role="tablist" aria-label="Trading actions">
+          {(['ORDER', 'SELL'] as const).map((tab) => (
+            <button
+              key={tab}
+              role="tab"
+              aria-selected={ticketTab === tab}
+              className={ticketTab === tab ? 'is-active' : ''}
+              onClick={() => {
+                setTicketTab(tab);
+                setConfirming(false);
+              }}
+            >
+              {tab}
+            </button>
+          ))}
         </div>
-        <b>PAPER</b>
-        <button onClick={() => setSettingsOpen((value) => !value)} aria-label="Order settings">
+        <button
+          className="ticket-settings-trigger"
+          onClick={() => setSettingsOpen((value) => !value)}
+          aria-label="Order settings"
+        >
           <Settings2 aria-hidden="true" />
         </button>
       </div>
@@ -179,217 +264,317 @@ export function OrderTicket({
         </div>
       ) : null}
 
-      <div className="direction-tabs">
-        <button
-          className={positionSide === 'LONG' ? 'is-active is-long' : ''}
-          onClick={() => setPositionSide('LONG')}
-        >
-          BUY / LONG <kbd>B</kbd>
-        </button>
-        <button
-          className={positionSide === 'SHORT' ? 'is-active is-short' : ''}
-          onClick={() => setPositionSide('SHORT')}
-        >
-          SHORT <kbd>S</kbd>
-        </button>
-      </div>
-
-      <div className="order-type-tabs" aria-label="Order type">
-        {(['MARKET', 'LIMIT', 'STOP_MARKET'] as OrderType[]).map((type) => (
-          <button
-            key={type}
-            className={type === orderType ? 'is-active' : ''}
-            onClick={() => {
-              setOrderType(type);
-              setConfirming(false);
-            }}
-          >
-            {type === 'STOP_MARKET' ? 'Stop' : type[0] + type.slice(1).toLowerCase()}
-          </button>
-        ))}
-      </div>
-
-      <div className="leverage-control">
-        <div>
-          <span>LEVERAGE</span>
-          <small>Market cap {MARKET_REGISTRY[symbol].maxLeverage}x</small>
-        </div>
-        <div role="group" aria-label="Leverage">
-          {allowedLeverages(symbol).map((value) => (
+      {ticketTab === 'ORDER' ? (
+        <div className="ticket-tab-panel" role="tabpanel">
+          <div className="direction-tabs">
             <button
-              key={value}
-              className={value === leverage ? 'is-active' : ''}
-              onClick={() => {
-                setLeverage(value);
-                setConfirming(false);
-              }}
+              className={positionSide === 'LONG' ? 'is-active is-long' : ''}
+              onClick={() => setPositionSide('LONG')}
             >
-              {value}x
+              BUY / LONG <kbd>B</kbd>
             </button>
-          ))}
-        </div>
-      </div>
+            <button
+              className={positionSide === 'SHORT' ? 'is-active is-short' : ''}
+              onClick={() => setPositionSide('SHORT')}
+            >
+              SELL / SHORT <kbd>S</kbd>
+            </button>
+          </div>
 
-      <div className="sizing-mode-toggle" role="group" aria-label="Order sizing mode">
-        <button
-          className={sizingMode === 'MARGIN' ? 'is-active' : ''}
-          onClick={() => setSizingMode('MARGIN')}
-        >
-          Margin
-        </button>
-        <button
-          className={sizingMode === 'POSITION_SIZE' ? 'is-active' : ''}
-          onClick={() => setSizingMode('POSITION_SIZE')}
-        >
-          Position Size
-        </button>
-      </div>
-
-      <label className="terminal-field">
-        <span>{sizingMode === 'MARGIN' ? 'MARGIN' : 'POSITION SIZE'}</span>
-        <div>
-          <i>$</i>
-          <input
-            value={sizeAmount}
-            onChange={(event) => {
-              setSizeAmount(event.target.value);
+          <OrderTypeTabs
+            value={orderType}
+            onChange={(value) => {
+              setOrderType(value);
               setConfirming(false);
             }}
-            inputMode="decimal"
-            aria-label={sizingMode === 'MARGIN' ? 'Margin amount in USD' : 'Position size in USD'}
           />
-          <b>USD</b>
-        </div>
-      </label>
-      <div className="ticket-presets">
-        {presets.map((value, index) => (
-          <button key={percentages[index]} onClick={() => setSizeAmount(value)}>
-            {percentages[index] / 100}% <kbd>{index + 1}</kbd>
-          </button>
-        ))}
-      </div>
 
-      {orderType !== 'MARKET' ? (
-        <label className="terminal-field">
-          <span>{orderType === 'LIMIT' ? 'LIMIT PRICE' : 'STOP TRIGGER'}</span>
-          <div>
-            <i>$</i>
-            <input
-              value={orderPrice}
-              onChange={(event) => setOrderPrice(event.target.value)}
-              placeholder={market?.price ?? '0.00'}
-              inputMode="decimal"
-              aria-label={orderType === 'LIMIT' ? 'Limit price' : 'Stop trigger price'}
-            />
-            <b>USD</b>
+          <div className="leverage-control">
+            <div>
+              <span>LEVERAGE</span>
+              <small>Market cap {MARKET_REGISTRY[symbol].maxLeverage}x</small>
+            </div>
+            <div role="group" aria-label="Leverage">
+              {allowedLeverages(symbol).map((value) => (
+                <button
+                  key={value}
+                  className={value === leverage ? 'is-active' : ''}
+                  onClick={() => {
+                    setLeverage(value);
+                    setConfirming(false);
+                  }}
+                >
+                  {value}x
+                </button>
+              ))}
+            </div>
           </div>
-        </label>
-      ) : null}
 
-      <button className="risk-toggle" onClick={() => setRiskOpen((value) => !value)}>
-        <ShieldCheck aria-hidden="true" /> Take Profit / Stop Loss
-        <span>{riskOpen ? 'Hide' : 'Add'}</span>
-      </button>
-      {riskOpen ? (
-        <div className="risk-fields">
-          <label className="terminal-field terminal-field--compact">
-            <span>TAKE PROFIT</span>
+          <div className="sizing-mode-toggle" role="group" aria-label="Order sizing mode">
+            <button
+              className={sizingMode === 'MARGIN' ? 'is-active' : ''}
+              onClick={() => changeSizingMode('MARGIN')}
+            >
+              Margin
+            </button>
+            <button
+              className={sizingMode === 'POSITION_SIZE' ? 'is-active' : ''}
+              onClick={() => changeSizingMode('POSITION_SIZE')}
+            >
+              Position Size
+            </button>
+          </div>
+
+          <label className="terminal-field">
+            <span>{sizingMode === 'MARGIN' ? 'MARGIN' : 'POSITION SIZE'}</span>
             <div>
               <i>$</i>
               <input
-                value={takeProfitPrice}
-                onChange={(event) => setTakeProfitPrice(event.target.value)}
-                placeholder="Optional"
+                value={sizeAmount}
+                onChange={(event) => {
+                  setSizeAmount(event.target.value);
+                  setConfirming(false);
+                }}
                 inputMode="decimal"
+                aria-label={
+                  sizingMode === 'MARGIN' ? 'Margin amount in USD' : 'Position size in USD'
+                }
               />
+              <b>USD</b>
             </div>
           </label>
-          <label className="terminal-field terminal-field--compact">
-            <span>STOP LOSS</span>
-            <div>
-              <i>$</i>
-              <input
-                value={stopLossPrice}
-                onChange={(event) => setStopLossPrice(event.target.value)}
-                placeholder="Optional"
-                inputMode="decimal"
-              />
+          <div className="ticket-presets">
+            {presets.map((value, index) => (
+              <button key={percentages[index]} onClick={() => setSizeAmount(value)}>
+                {percentages[index] / 100}% <kbd>{index + 1}</kbd>
+              </button>
+            ))}
+          </div>
+
+          {orderType !== 'MARKET' ? (
+            <label className="terminal-field">
+              <span>{orderType === 'LIMIT' ? 'LIMIT PRICE' : 'STOP TRIGGER'}</span>
+              <div>
+                <i>$</i>
+                <input
+                  value={orderPrice}
+                  onChange={(event) => setOrderPrice(event.target.value)}
+                  placeholder={market?.price ?? '0.00'}
+                  inputMode="decimal"
+                  aria-label={orderType === 'LIMIT' ? 'Limit price' : 'Stop trigger price'}
+                />
+                <b>USD</b>
+              </div>
+            </label>
+          ) : null}
+
+          <button className="risk-toggle" onClick={() => setRiskOpen((value) => !value)}>
+            <ShieldCheck aria-hidden="true" /> Take Profit / Stop Loss
+            <span>{riskOpen ? 'Hide' : 'Add'}</span>
+          </button>
+          {riskOpen ? (
+            <div className="risk-fields">
+              <label className="terminal-field terminal-field--compact">
+                <span>TAKE PROFIT</span>
+                <div>
+                  <i>$</i>
+                  <input
+                    value={takeProfitPrice}
+                    onChange={(event) => setTakeProfitPrice(event.target.value)}
+                    placeholder="Optional"
+                    inputMode="decimal"
+                  />
+                </div>
+              </label>
+              <label className="terminal-field terminal-field--compact">
+                <span>STOP LOSS</span>
+                <div>
+                  <i>$</i>
+                  <input
+                    value={stopLossPrice}
+                    onChange={(event) => setStopLossPrice(event.target.value)}
+                    placeholder="Optional"
+                    inputMode="decimal"
+                  />
+                </div>
+              </label>
             </div>
-          </label>
-        </div>
-      ) : null}
+          ) : null}
 
-      <div className="position-size-preview">
-        <span>POSITION SIZE</span>
-        <strong className="tabular">{formatUsd(positionSize)}</strong>
-        <small>
-          {leverage}x leverage · {formatUsd(marginRequired)} margin
-        </small>
-      </div>
-      <dl className="order-estimate order-estimate--primary">
-        <div>
-          <dt>Margin required</dt>
-          <dd className="tabular">{formatUsd(marginRequired)}</dd>
+          <div className="order-preview-grid">
+            <div className="position-size-preview">
+              <span>POSITION SIZE</span>
+              <strong className="tabular">{formatUsd(positionSize)}</strong>
+              <div className="position-size-preview__meta">
+                <small>
+                  {leverage}x · {formatUsd(marginRequired)} margin
+                </small>
+                <small className="tabular">
+                  Mark {market?.markPrice ? formatPrice(market.markPrice, symbol) : '—'} · Fee ~
+                  {formatUsd(estimatedFee.toFixed(2))}
+                </small>
+              </div>
+            </div>
+            <dl className="order-estimate order-estimate--primary">
+              <div>
+                <dt>Margin required</dt>
+                <dd className="tabular">{formatUsd(marginRequired)}</dd>
+              </div>
+              <div>
+                <dt>Available after trade</dt>
+                <dd className="tabular">~{formatUsd(availableAfter.toFixed(2))}</dd>
+              </div>
+              <div>
+                <dt>Est. liquidation</dt>
+                <dd className="tabular">
+                  {estimatedLiquidation && leverage > 1
+                    ? `~${formatPrice(estimatedLiquidation.toFixed(8), symbol)}`
+                    : '—'}
+                </dd>
+              </div>
+            </dl>
+          </div>
+          <Button
+            className={cn('professional-submit', positionSide === 'SHORT' && 'is-short')}
+            disabled={disabled || invalidOpen || pending}
+            onClick={submitOpen}
+          >
+            {pending
+              ? 'Submitting…'
+              : confirming
+                ? `Confirm ${positionSide} ${symbol.split('-')[0]}`
+                : `${orderType === 'MARKET' ? 'Place' : 'Create'} ${positionSide} Order`}
+          </Button>
         </div>
-        <div>
-          <dt>Exposure</dt>
-          <dd className="tabular">{formatUsd(positionSize)}</dd>
+      ) : (
+        <div className="ticket-tab-panel sell-ticket" role="tabpanel">
+          {position ? (
+            <>
+              <div className="sell-position-summary">
+                <AssetIcon symbol={position.symbol} size={30} />
+                <div>
+                  <strong>{position.symbol.replace('-', '/')}</strong>
+                  <span>
+                    {position.side} · {position.leverage}x
+                  </span>
+                </div>
+                <b
+                  className={cn(
+                    'tabular',
+                    position.unrealizedPnL.startsWith('-')
+                      ? 'negative'
+                      : isPositive(position.unrealizedPnL) && 'positive',
+                  )}
+                >
+                  {formatUsd(position.unrealizedPnL, { signed: true })}
+                  <small>{formatPercent(position.percentageReturn)} ROI</small>
+                </b>
+              </div>
+              <div className="close-semantics">
+                <span>{position.side === 'LONG' ? 'SELL TO CLOSE' : 'BUY TO CLOSE'}</span>
+                <p>
+                  {position.side === 'LONG'
+                    ? 'Reducing this long sends the server a close intent.'
+                    : 'Reducing this short buys back exposure. It never opens or reverses a long.'}
+                </p>
+              </div>
+              <OrderTypeTabs
+                value={closeOrderType}
+                onChange={(value) => {
+                  setCloseOrderType(value);
+                  setConfirming(false);
+                }}
+              />
+              <div className="close-size-control">
+                <span>POSITION REDUCTION</span>
+                <div role="group" aria-label="Position reduction">
+                  {percentages.map((percentage) => (
+                    <button
+                      key={percentage}
+                      className={closePercentage === percentage ? 'is-active' : ''}
+                      onClick={() => {
+                        setClosePercentage(percentage);
+                        setConfirming(false);
+                      }}
+                    >
+                      {percentage / 100}%
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {closeOrderType !== 'MARKET' ? (
+                <label className="terminal-field">
+                  <span>{closeOrderType === 'LIMIT' ? 'LIMIT PRICE' : 'STOP TRIGGER'}</span>
+                  <div>
+                    <i>$</i>
+                    <input
+                      value={closePrice}
+                      onChange={(event) => setClosePrice(event.target.value)}
+                      placeholder={market?.price ?? '0.00'}
+                      inputMode="decimal"
+                      aria-label={
+                        closeOrderType === 'LIMIT' ? 'Close limit price' : 'Close stop trigger'
+                      }
+                    />
+                    <b>USD</b>
+                  </div>
+                </label>
+              ) : null}
+              <dl className="close-position-detail">
+                <div>
+                  <dt>Open size</dt>
+                  <dd className="tabular">
+                    {formatQuantity(position.quantity, position.symbol)}{' '}
+                    {MARKET_REGISTRY[position.symbol].baseAsset}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Position notional</dt>
+                  <dd className="tabular">{formatUsd(position.notional)}</dd>
+                </div>
+                <div>
+                  <dt>Margin released proportionally</dt>
+                  <dd className="tabular">{closePercentage / 100}%</dd>
+                </div>
+                <div>
+                  <dt>Reference mark</dt>
+                  <dd className="tabular">
+                    {market?.markPrice ? formatPrice(market.markPrice, symbol) : '—'}
+                  </dd>
+                </div>
+              </dl>
+              <Button
+                className={cn(
+                  'professional-submit close-position-submit',
+                  position.side === 'LONG' && 'is-short',
+                )}
+                disabled={disabled || invalidClose || pending}
+                onClick={submitClose}
+              >
+                {pending
+                  ? 'Submitting…'
+                  : confirming
+                    ? `Confirm ${closePercentage / 100}% Close`
+                    : position.side === 'SHORT'
+                      ? `Buy to Close ${closePercentage / 100}% SHORT`
+                      : `Close ${closePercentage / 100}% LONG Position`}
+              </Button>
+            </>
+          ) : (
+            <div className="sell-empty-state">
+              <span>NO {symbol.replace('-', '/')} POSITION</span>
+              <strong>Nothing to reduce</strong>
+              <p>
+                The SELL workspace is tied to the selected market and only submits close intents.
+              </p>
+              <button onClick={() => setTicketTab('ORDER')}>Return to Order</button>
+            </div>
+          )}
         </div>
-        <div>
-          <dt>Available after trade</dt>
-          <dd className="tabular">~{formatUsd(availableAfter.toFixed(2))}</dd>
-        </div>
-        <div>
-          <dt>Est. liquidation</dt>
-          <dd className="tabular">
-            {estimatedLiquidation && leverage > 1
-              ? `~${formatPrice(estimatedLiquidation.toFixed(8), symbol)}`
-              : '—'}
-          </dd>
-        </div>
-      </dl>
-      <dl className="order-estimate order-estimate--secondary">
-        <div>
-          <dt>Reference mark</dt>
-          <dd className="tabular">
-            {market?.markPrice ? formatPrice(market.markPrice, symbol) : '—'}
-          </dd>
-        </div>
-        <div>
-          <dt>Estimated fee</dt>
-          <dd className="tabular">~{formatUsd(estimatedFee.toFixed(2))}</dd>
-        </div>
-        <div>
-          <dt>Available margin</dt>
-          <dd className="tabular">{formatUsd(account.availableMargin)}</dd>
-        </div>
-        <div>
-          <dt>{leverage}x order capacity</dt>
-          <dd className="tabular">{formatUsd(buyingPower.toFixed(2))}</dd>
-        </div>
-      </dl>
+      )}
 
-      {disabledReason ? (
-        <p className="ticket-blocked" role="status">
-          <Info aria-hidden="true" /> {disabledReason}
-        </p>
-      ) : null}
-      <Button
-        className={cn('professional-submit', positionSide === 'SHORT' && 'is-short')}
-        disabled={disabled || invalid || pending}
-        onClick={submit}
-      >
-        {pending
-          ? 'Submitting…'
-          : confirming
-            ? `Confirm ${positionSide} ${symbol.split('-')[0]}`
-            : `${orderType === 'MARKET' ? 'Place' : 'Create'} ${positionSide} order`}
-      </Button>
-      <p className="paper-disclaimer">
-        Simulated order. No real asset will be purchased. Final fills use authoritative server
-        pricing.
-      </p>
-      {hotkeysEnabled ? (
+      <p className="paper-disclaimer">SIMULATED ORDER · NO REAL FUNDS</p>
+      {hotkeysEnabled && ticketTab === 'ORDER' ? (
         <span className="hotkey-hint">
           <Keyboard aria-hidden="true" /> Hotkeys enabled
         </span>

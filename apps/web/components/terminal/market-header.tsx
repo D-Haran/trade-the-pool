@@ -9,18 +9,11 @@ import {
 import { ChevronDown, Radio, Search } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { cn } from '@/lib/cn';
-import { formatBaseVolume, formatPrice } from '@/lib/format';
+import { formatBaseVolume, formatBasisPoints, formatPrice } from '@/lib/format';
 import { marketDataStatusLabel } from '@/lib/market-data-status';
 import { AssetIcon } from './asset-icon';
 
 const symbols: MarketSymbolDto[] = [...SUPPORTED_MARKET_SYMBOLS];
-
-function changeLabel(value: string | null | undefined): string {
-  if (value == null) return '—';
-  const basisPoints = BigInt(value);
-  const sign = basisPoints > 0n ? '+' : '';
-  return `${sign}${(Number(basisPoints) / 100).toFixed(2)}%`;
-}
 
 export function MarketHeader({
   symbol,
@@ -113,7 +106,7 @@ export function MarketHeader({
                       change?.startsWith('-') ? 'negative' : change && change !== '0' && 'positive',
                     )}
                   >
-                    {changeLabel(change)}
+                    {formatBasisPoints(change)}
                   </b>
                 </button>
               );
@@ -129,10 +122,12 @@ export function MarketHeader({
         <span
           className={cn(
             'tabular',
-            active?.change24hBasisPoints?.startsWith('-') ? 'negative' : 'positive',
+            active?.change24hBasisPoints?.startsWith('-')
+              ? 'negative'
+              : active?.change24hBasisPoints && active.change24hBasisPoints !== '0' && 'positive',
           )}
         >
-          {changeLabel(active?.change24hBasisPoints)}
+          {formatBasisPoints(active?.change24hBasisPoints)}
         </span>
       </div>
 
@@ -147,14 +142,17 @@ export function MarketHeader({
         </div>
         {active?.volume24h ? (
           <div>
-            <dt>24H BASE VOL</dt>
+            <dt>24H VOLUME</dt>
             <dd className="tabular">{formatBaseVolume(active.volume24h, symbol)}</dd>
           </div>
         ) : null}
       </dl>
-      <span className={`market-freshness market-freshness--${freshness.toLowerCase()}`}>
-        <Radio aria-hidden="true" /> {displayStatus}
-      </span>
+      <div className="market-mode-status">
+        <span className={`market-freshness market-freshness--${freshness.toLowerCase()}`}>
+          <Radio aria-hidden="true" /> {displayStatus}
+        </span>
+        <span className="paper-mode-badge">PAPER</span>
+      </div>
     </header>
   );
 }

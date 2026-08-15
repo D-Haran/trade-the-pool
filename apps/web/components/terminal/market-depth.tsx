@@ -7,7 +7,7 @@ import type {
   MarketTradeDto,
 } from '@trade-the-pool/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { api } from '@/lib/api-client';
 import { formatCompactQuantity, formatPrice } from '@/lib/format';
 import { queryKeys } from '@/lib/query-keys';
@@ -22,7 +22,7 @@ function percentageWidth(value: string, maximum: number): string {
   return `${Math.min(100, (Number(value) / maximum) * 100)}%`;
 }
 
-export function MarketDepthPanel({
+function MarketDepthPanelComponent({
   symbol,
   collapsed,
   onToggle,
@@ -241,3 +241,6 @@ export function MarketDepthPanel({
     </aside>
   );
 }
+
+export const MarketDepthPanel = memo(MarketDepthPanelComponent);
+MarketDepthPanel.displayName = 'MarketDepthPanel';

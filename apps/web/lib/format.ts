@@ -37,6 +37,23 @@ export function formatPercent(value: string, signed = true): string {
   return `${sign}${grouped(whole)}.${fraction.padEnd(2, '0').slice(0, 2)}%`;
 }
 
+export function formatBasisPoints(value: string | null | undefined, signed = true): string {
+  if (value == null) return '—';
+  const basisPoints = BigInt(value);
+  const negative = basisPoints < 0n;
+  const absolute = negative ? -basisPoints : basisPoints;
+  const sign = negative ? '-' : signed && absolute > 0n ? '+' : '';
+  return `${sign}${absolute / 100n}.${(absolute % 100n).toString().padStart(2, '0')}%`;
+}
+
+export function formatMultiple(numerator: string, denominator: string): string {
+  const top = BigInt(numerator.replace('.', ''));
+  const bottom = BigInt(denominator.replace('.', ''));
+  if (bottom <= 0n) return '—';
+  const hundredths = (top * 100n + bottom / 2n) / bottom;
+  return `${hundredths / 100n}.${(hundredths % 100n).toString().padStart(2, '0')}x`;
+}
+
 export function formatPrice(value: string, symbol?: MarketSymbolDto): string {
   const raw = decimalParts(value);
   const digits = symbol

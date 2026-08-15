@@ -263,7 +263,7 @@ export function TournamentDetail({ slug }: { slug: string }) {
               </div>
             </div>
           </section>
-          <section className="detail-section">
+          <section className="detail-section" id="leaderboard">
             <div className="detail-section__title">
               <div>
                 <span>{final ? 'Final standings' : 'Live standings'}</span>

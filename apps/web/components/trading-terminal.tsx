@@ -13,7 +13,7 @@ import type {
 } from '@trade-the-pool/shared';
 import { AlertTriangle } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiClientError } from '@/lib/api-client';
 import { formatPrice, formatQuantity, formatUsd } from '@/lib/format';
@@ -29,6 +29,7 @@ import { ChartWorkspace } from './terminal/chart-workspace';
 import { MarketHeader } from './terminal/market-header';
 import { MarketActivityStrip } from './terminal/market-activity-strip';
 import { MarketDepthPanel } from './terminal/market-depth';
+import { MiniLeaderboard } from './terminal/mini-leaderboard';
 import { OrderTicket } from './terminal/order-ticket';
 import { TerminalPanels } from './terminal/terminal-panels';
 import { AccountStrip, TournamentStatus } from './terminal/tournament-status';
@@ -55,23 +56,15 @@ function orderError(error: unknown): string {
   return messages[error.code] ?? error.message;
 }
 
-function useClock(): number {
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, []);
-  return now;
-}
-
 function Terminal({ slug, entryId }: { slug: string; entryId: string }) {
   const router = useRouter();
   const queryClient = useQueryClient();
   const toast = useToast();
-  const now = useClock();
-  const { symbol, setSymbol, confirmationsEnabled } = useTerminalStore();
+  const symbol = useTerminalStore((state) => state.symbol);
+  const setSymbol = useTerminalStore((state) => state.setSymbol);
+  const setOrderPanelTab = useTerminalStore((state) => state.setOrderPanelTab);
   const [switching, setSwitching] = useState(false);
-  const [depthCollapsed, setDepthCollapsed] = useState(false);
+  const [depthCollapsed, setDepthCollapsed] = useState(true);
   const retryRef = useRef<{ fingerprint: string; key: string } | null>(null);
   const marketProjectionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -140,7 +133,6 @@ function Terminal({ slug, entryId }: { slug: string; entryId: string }) {
     queryKey: queryKeys.leaderboard(tournamentId ?? 'pending'),
     queryFn: () => api.leaderboard(tournamentId!),
     enabled: Boolean(tournamentId),
-    refetchInterval: 5_000,
   });
 
   const marketMap = useMemo(
@@ -227,7 +219,6 @@ function Terminal({ slug, entryId }: { slug: string; entryId: string }) {
             }
           : current,
       );
-      void invalidateTradingState();
     }
     if (event.type === 'tournament.prize_pool_updated')
       queryClient.setQueryData<ApiEnvelope<TournamentDto>>(queryKeys.tournament(slug), (current) =>
@@ -340,6 +331,16 @@ function Terminal({ slug, entryId }: { slug: string; entryId: string }) {
       toast.push({ tone: 'error', title: 'Protection rejected', detail: orderError(error) }),
   });
 
+  const selectMarket = useCallback(
+    (next: MarketSymbolDto) => {
+      setSymbol(next);
+      const url = new URL(window.location.href);
+      url.searchParams.set('symbol', next);
+      window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}`);
+    },
+    [setSymbol],
+  );
+
   if (entry.isLoading) return <LoadingState label="Loading trading account" />;
   if (entry.isError || !entry.data) {
     const denied = entry.error instanceof ApiClientError && entry.error.status === 403;
@@ -368,7 +369,7 @@ function Terminal({ slug, entryId }: { slug: string; entryId: string }) {
     : connection === 'RECONNECTING' || connection === 'CONNECTING'
       ? 'RECONNECTING'
       : (activeMarket?.status ?? 'UNAVAILABLE');
-  const deadlinePassed = now >= new Date(account.tournament.tradingClosesAt).getTime();
+  const deadlinePassed = Date.now() >= new Date(account.tournament.tradingClosesAt).getTime();
   const restUnavailable = entry.isError || tournament.isError || marketError;
   const tradeDisabled =
     !confirmed ||
@@ -396,12 +397,6 @@ function Terminal({ slug, entryId }: { slug: string; entryId: string }) {
               ? 'Switching active entry…'
               : null;
 
-  const selectMarket = (next: MarketSymbolDto) => {
-    setSymbol(next);
-    const url = new URL(window.location.href);
-    url.searchParams.set('symbol', next);
-    window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}`);
-  };
   const activePosition =
     positions.data?.data.find(
       (position) => position.symbol === symbol && position.quantity !== '0.00000000',
@@ -439,55 +434,59 @@ function Terminal({ slug, entryId }: { slug: string; entryId: string }) {
         activeSymbol={symbol}
         onSelect={selectMarket}
       />
-      <div className={cn('professional-terminal-grid', depthCollapsed && 'is-depth-collapsed')}>
-        <ChartWorkspace symbol={symbol} position={activePosition} />
-        <MarketDepthPanel
-          symbol={symbol}
-          collapsed={depthCollapsed}
-          onToggle={() => setDepthCollapsed((value) => !value)}
-        />
+      <div className="terminal-workspace-grid">
+        <div className={cn('professional-terminal-grid', depthCollapsed && 'is-depth-collapsed')}>
+          <ChartWorkspace symbol={symbol} position={activePosition} />
+          <MarketDepthPanel
+            symbol={symbol}
+            collapsed={depthCollapsed}
+            onToggle={() => setDepthCollapsed((value) => !value)}
+          />
+        </div>
         <OrderTicket
           account={account}
           symbol={symbol}
           market={activeMarket}
+          position={activePosition}
           disabled={tradeDisabled}
-          disabledReason={disabledReason}
           pending={submit.isPending}
           onSubmit={sendOrder}
         />
+        <AccountStrip account={account} activePosition={activePosition} />
+        <TerminalPanels
+          activeSymbol={symbol}
+          positions={positions.data?.data ?? []}
+          orders={orders.data?.data ?? []}
+          fills={fills.data?.data ?? []}
+          performance={performance.data?.data}
+          leaderboard={leaderboard.data}
+          entryId={entryId}
+          loadingPositions={positions.isLoading}
+          onManagePosition={(position) => {
+            if (position.symbol !== symbol) selectMarket(position.symbol);
+            setOrderPanelTab('SELL');
+            if (window.innerWidth <= 1050)
+              window.setTimeout(
+                () =>
+                  document
+                    .querySelector('.professional-order-ticket')
+                    ?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+                0,
+              );
+          }}
+          onCancel={(order) => cancel.mutate(order)}
+          onProtect={(position, takeProfit, stopLoss) =>
+            protect.mutate({ position, takeProfit, stopLoss })
+          }
+        />
+        <MiniLeaderboard
+          leaderboard={leaderboard.data}
+          currentEntryId={entryId}
+          tournamentSlug={slug}
+          loading={leaderboard.isLoading}
+          unavailable={leaderboard.isError}
+        />
       </div>
-      <AccountStrip account={account} activePosition={activePosition} />
-      <TerminalPanels
-        activeSymbol={symbol}
-        positions={positions.data?.data ?? []}
-        orders={orders.data?.data ?? []}
-        fills={fills.data?.data ?? []}
-        performance={performance.data?.data}
-        leaderboard={leaderboard.data}
-        entryId={entryId}
-        loadingPositions={positions.isLoading}
-        onClose={(position, percentageBps) => {
-          if (
-            confirmationsEnabled &&
-            !window.confirm(
-              `Close ${percentageBps / 100}% of the ${position.side} ${position.symbol} paper position?`,
-            )
-          )
-            return;
-          sendOrder({
-            entryId,
-            symbol: position.symbol,
-            intent: 'CLOSE',
-            positionSide: position.side,
-            amount: { type: 'PERCENTAGE', percentageBps },
-            execution: { type: 'MARKET' },
-          });
-        }}
-        onCancel={(order) => cancel.mutate(order)}
-        onProtect={(position, takeProfit, stopLoss) =>
-          protect.mutate({ position, takeProfit, stopLoss })
-        }
-      />
     </div>
   );
 }

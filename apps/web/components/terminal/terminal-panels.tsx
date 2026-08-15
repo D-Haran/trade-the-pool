@@ -76,13 +76,13 @@ function ProtectionEditor({
 function PositionsTable({
   positions,
   loading,
-  onClose,
+  onManage,
   onProtect,
   activeSymbol,
 }: {
   positions: PositionDto[];
   loading: boolean;
-  onClose: (position: PositionDto, percentageBps: number) => void;
+  onManage: (position: PositionDto) => void;
   onProtect: (position: PositionDto, takeProfit: string | null, stopLoss: string | null) => void;
   activeSymbol: MarketSymbolDto;
 }) {
@@ -155,10 +155,8 @@ function PositionsTable({
               </span>
             </button>
             <div className="row-actions">
-              <button onClick={() => onClose(position, 2500)}>25%</button>
-              <button onClick={() => onClose(position, 5000)}>50%</button>
-              <button className="close-all" onClick={() => onClose(position, 10_000)}>
-                Close
+              <button className="close-all" onClick={() => onManage(position)}>
+                Manage
               </button>
             </div>
           </div>
@@ -377,7 +375,7 @@ export function TerminalPanels({
   leaderboard,
   entryId,
   loadingPositions,
-  onClose,
+  onManagePosition,
   onCancel,
   onProtect,
 }: {
@@ -389,11 +387,12 @@ export function TerminalPanels({
   leaderboard?: LeaderboardPageDto;
   entryId: string;
   loadingPositions: boolean;
-  onClose: (position: PositionDto, percentageBps: number) => void;
+  onManagePosition: (position: PositionDto) => void;
   onCancel: (order: OrderHistoryDto) => void;
   onProtect: (position: PositionDto, takeProfit: string | null, stopLoss: string | null) => void;
 }) {
-  const { lowerTab, setLowerTab } = useTerminalStore();
+  const lowerTab = useTerminalStore((state) => state.lowerTab);
+  const setLowerTab = useTerminalStore((state) => state.setLowerTab);
   const openCount = orders.filter((order) =>
     ['PENDING', 'OPEN', 'TRIGGERED'].includes(order.status),
   ).length;
@@ -417,7 +416,7 @@ export function TerminalPanels({
             activeSymbol={activeSymbol}
             positions={positions}
             loading={loadingPositions}
-            onClose={onClose}
+            onManage={onManagePosition}
             onProtect={onProtect}
           />
         ) : null}
