@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  distDir: process.env.NEXT_DIST_DIR ?? '.next',
   transpilePackages: ['@trade-the-pool/shared', '@trade-the-pool/ui'],
   outputFileTracingRoot: resolve(dirname(fileURLToPath(import.meta.url)), '../..'),
   webpack(config) {

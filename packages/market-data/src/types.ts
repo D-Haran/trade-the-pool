@@ -104,11 +104,34 @@ export type MarketCandle = {
   volume: Quantity | null;
 };
 
+export type CandleHistoryRequest = {
+  limit: number;
+  /** Exclusive UTC cursor. Results are always returned in chronological order. */
+  before?: Date;
+};
+
+export type PersistedSubMinuteInterval = '5s' | '15s' | '30s';
+export type PersistedSubMinuteCandle = {
+  symbol: MarketSymbol;
+  interval: PersistedSubMinuteInterval;
+  candle: MarketCandle;
+  source: string;
+};
+
+export interface SubMinuteCandleStore {
+  load(
+    symbol: MarketSymbol,
+    interval: PersistedSubMinuteInterval,
+    request: CandleHistoryRequest,
+  ): Promise<MarketCandle[]>;
+  persist(record: PersistedSubMinuteCandle, retentionCutoff: Date): Promise<void>;
+}
+
 export interface MarketHistoryProvider extends MarketPriceProvider {
   getCandles(
     symbol: MarketSymbol,
     interval: CandleInterval,
-    limit: number,
+    request: number | CandleHistoryRequest,
   ): Promise<MarketCandle[]> | MarketCandle[];
 }
 
@@ -117,6 +140,8 @@ export type MarketStatistics = {
   high24h: Price | null;
   low24h: Price | null;
   volume24h: Quantity | null;
+  change15mBasisPoints?: bigint | null;
+  range5mBasisPoints?: bigint | null;
 };
 
 export type OrderBookLevel = { price: Price; quantity: Quantity; total: Quantity };

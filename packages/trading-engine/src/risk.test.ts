@@ -8,6 +8,7 @@ import {
 } from '@trade-the-pool/shared';
 import {
   estimatedLiquidationPrice,
+  positionNotionalFromMargin,
   releasedMargin,
   requiredMargin,
   shouldLiquidate,
@@ -21,6 +22,12 @@ describe('fixed-precision leverage and margin', () => {
     [5, '2000.00'],
   ])('reserves exact initial margin at %ix', (leverage, expected) => {
     expect(moneyToString(requiredMargin(parseMoney('10000.00'), leverage))).toBe(expected);
+  });
+
+  it('turns margin sizing into the same authoritative notional for long and short orders', () => {
+    const notional = positionNotionalFromMargin(parseMoney('1000.00'), 5);
+    expect(moneyToString(notional)).toBe('5000.00');
+    expect(moneyToString(requiredMargin(notional, 5))).toBe('1000.00');
   });
 
   it('releases partial margin proportionally and closes without residual cents', () => {

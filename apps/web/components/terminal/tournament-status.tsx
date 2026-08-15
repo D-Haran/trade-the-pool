@@ -4,12 +4,13 @@ import type {
   EntryDetailDto,
   EntrySummaryDto,
   LeaderboardPageDto,
+  PositionDto,
   TournamentDto,
 } from '@trade-the-pool/shared';
 import { ArrowDown, ArrowUp, ChevronDown, Clock3 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { cn } from '@/lib/cn';
-import { formatUsd, isPositive } from '@/lib/format';
+import { formatPercent, formatUsd, isPositive } from '@/lib/format';
 import { Countdown } from '../countdown';
 
 function subtractMoney(left: string, right: string): string {
@@ -150,26 +151,69 @@ export function TournamentStatus({
   );
 }
 
-export function AccountStrip({ account }: { account: EntryDetailDto }) {
+export function AccountStrip({
+  account,
+  activePosition,
+}: {
+  account: EntryDetailDto;
+  activePosition: PositionDto | null;
+}) {
+  const exposure =
+    Number(account.equity) > 0 ? Number(account.grossExposure) / Number(account.equity) : 0;
   return (
     <dl className="terminal-account-strip">
-      <div>
+      <div className="account-metric account-metric--hero">
+        <dt>TOTAL P&amp;L</dt>
+        <dd
+          className={cn(
+            'tabular',
+            account.score.startsWith('-') ? 'negative' : isPositive(account.score) && 'positive',
+          )}
+        >
+          <strong>{formatUsd(account.score, { signed: true })}</strong>
+          <span>{formatPercent(account.percentageReturn)}</span>
+        </dd>
+      </div>
+      <div className="account-metric account-metric--primary">
         <dt>SIMULATED EQUITY</dt>
         <dd className="tabular">{formatUsd(account.equity)}</dd>
       </div>
-      <div>
+      {activePosition ? (
+        <div className="account-metric account-metric--position">
+          <dt>
+            {activePosition.symbol.replace('-', '/')} · {activePosition.side}{' '}
+            {activePosition.leverage}x
+          </dt>
+          <dd
+            className={cn(
+              'tabular',
+              activePosition.unrealizedPnL.startsWith('-')
+                ? 'negative'
+                : isPositive(activePosition.unrealizedPnL) && 'positive',
+            )}
+          >
+            <strong>{formatUsd(activePosition.unrealizedPnL, { signed: true })}</strong>
+            <span>{formatPercent(activePosition.percentageReturn)} ROI</span>
+          </dd>
+        </div>
+      ) : null}
+      <div className="account-metric account-metric--primary">
+        <dt>ACCOUNT EXPOSURE</dt>
+        <dd className="tabular">{exposure.toFixed(2)}x</dd>
+      </div>
+      <div className="account-metric account-metric--secondary">
         <dt>AVAILABLE MARGIN</dt>
         <dd className="tabular">{formatUsd(account.availableMargin)}</dd>
       </div>
-      <div>
+      <div className="account-metric account-metric--secondary">
         <dt>MARGIN USED</dt>
         <dd className="tabular">{formatUsd(account.marginUsed)}</dd>
       </div>
-      <div>
+      <div className="account-metric account-metric--tertiary">
         <dt>GROSS EXPOSURE</dt>
         <dd className="tabular">{formatUsd(account.grossExposure)}</dd>
       </div>
-      <div>
+      <div className="account-metric account-metric--tertiary">
         <dt>REALIZED P&amp;L</dt>
         <dd
           className={cn(
@@ -182,7 +226,7 @@ export function AccountStrip({ account }: { account: EntryDetailDto }) {
           {formatUsd(account.realizedPnL, { signed: true })}
         </dd>
       </div>
-      <div>
+      <div className="account-metric account-metric--tertiary">
         <dt>UNREALIZED P&amp;L</dt>
         <dd
           className={cn(
@@ -195,7 +239,7 @@ export function AccountStrip({ account }: { account: EntryDetailDto }) {
           {formatUsd(account.unrealizedPnL, { signed: true })}
         </dd>
       </div>
-      <div>
+      <div className="account-metric account-metric--tertiary">
         <dt>STARTING BANKROLL</dt>
         <dd className="tabular">{formatUsd(account.startingBankroll)}</dd>
       </div>

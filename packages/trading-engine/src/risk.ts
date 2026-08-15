@@ -25,6 +25,13 @@ export function requiredMargin(notional: Money, leverage: number): Money {
   return moneyFromMinorUnits((notional + BigInt(leverage) - 1n) / BigInt(leverage));
 }
 
+/** Exact server-side conversion used by margin-sized open orders. */
+export function positionNotionalFromMargin(margin: Money, leverage: number): Money {
+  if (margin <= 0n || !Number.isInteger(leverage) || leverage < 1 || leverage > 5)
+    throw new Error('Invalid position sizing input');
+  return moneyFromMinorUnits(margin * BigInt(leverage));
+}
+
 export function releasedMargin(
   marginUsed: Money,
   closedQuantity: Quantity,

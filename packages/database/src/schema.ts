@@ -74,11 +74,36 @@ export const walletNetwork = pgEnum('wallet_network', [
   'testnet',
   'localnet',
 ]);
+export const subMinuteCandleInterval = pgEnum('sub_minute_candle_interval', ['5s', '15s', '30s']);
 
 const timestamps = {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 };
+
+export const subMinuteCandles = pgTable(
+  'sub_minute_candles',
+  {
+    symbol: tradingSymbol('symbol').notNull(),
+    interval: subMinuteCandleInterval('interval').notNull(),
+    timestamp: timestamp('timestamp', { withTimezone: true }).notNull(),
+    open: numeric('open', { precision: 28, scale: 8 }).notNull(),
+    high: numeric('high', { precision: 28, scale: 8 }).notNull(),
+    low: numeric('low', { precision: 28, scale: 8 }).notNull(),
+    close: numeric('close', { precision: 28, scale: 8 }).notNull(),
+    volume: numeric('volume', { precision: 28, scale: 8 }).notNull(),
+    source: varchar('source', { length: 64 }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.symbol, table.interval, table.timestamp] }),
+    check(
+      'sub_minute_candles_price_valid',
+      sql`${table.open} > 0 AND ${table.high} >= ${table.low} AND ${table.close} > 0`,
+    ),
+    check('sub_minute_candles_volume_nonnegative', sql`${table.volume} >= 0`),
+  ],
+);
 
 export const users = pgTable('users', {
   id: uuid('id').defaultRandom().primaryKey(),

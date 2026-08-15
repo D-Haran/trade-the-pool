@@ -43,6 +43,8 @@ const market = (
   maxLeverage: Leverage,
   sortOrder: number,
   accent: string,
+  pricePrecision: number,
+  quantityPrecision: number,
 ): CanonicalMarketMetadata => {
   const baseAsset = symbol.slice(0, -4);
   return {
@@ -52,8 +54,8 @@ const market = (
     quoteAsset: 'USD',
     assetClass: 'CRYPTO',
     enabled: true,
-    pricePrecision: 2,
-    quantityPrecision: 8,
+    pricePrecision,
+    quantityPrecision,
     schedule: '24/7',
     iconKey: baseAsset.toLowerCase(),
     accent,
@@ -72,18 +74,18 @@ const market = (
  * upstream symbol mappings. Keep this list curated; arbitrary ticker entry is unsupported.
  */
 export const MARKET_REGISTRY: Readonly<Record<MarketSymbol, CanonicalMarketMetadata>> = {
-  'BTC-USD': market('BTC-USD', 'Bitcoin', 5, 10, '#f7931a'),
-  'ETH-USD': market('ETH-USD', 'Ethereum', 5, 20, '#8b9cff'),
-  'SOL-USD': market('SOL-USD', 'Solana', 4, 30, '#66e6c1'),
-  'XRP-USD': market('XRP-USD', 'XRP', 3, 40, '#d8e1e8'),
-  'DOGE-USD': market('DOGE-USD', 'Dogecoin', 3, 50, '#c9a633'),
-  'LINK-USD': market('LINK-USD', 'Chainlink', 3, 60, '#4c6fff'),
-  'AVAX-USD': market('AVAX-USD', 'Avalanche', 3, 70, '#e84142'),
-  'ADA-USD': market('ADA-USD', 'Cardano', 2, 80, '#3b8edb'),
-  'SUI-USD': market('SUI-USD', 'Sui', 2, 90, '#6fbcf0'),
-  'AAVE-USD': market('AAVE-USD', 'Aave', 2, 100, '#8a75d6'),
-  'NEAR-USD': market('NEAR-USD', 'NEAR Protocol', 2, 110, '#b9f3dc'),
-  'LTC-USD': market('LTC-USD', 'Litecoin', 3, 120, '#b7bcc7'),
+  'BTC-USD': market('BTC-USD', 'Bitcoin', 5, 10, '#f7931a', 2, 6),
+  'ETH-USD': market('ETH-USD', 'Ethereum', 5, 20, '#8b9cff', 2, 5),
+  'SOL-USD': market('SOL-USD', 'Solana', 4, 30, '#66e6c1', 4, 4),
+  'XRP-USD': market('XRP-USD', 'XRP', 3, 40, '#d8e1e8', 5, 2),
+  'DOGE-USD': market('DOGE-USD', 'Dogecoin', 3, 50, '#c9a633', 6, 2),
+  'LINK-USD': market('LINK-USD', 'Chainlink', 3, 60, '#4c6fff', 4, 3),
+  'AVAX-USD': market('AVAX-USD', 'Avalanche', 3, 70, '#e84142', 4, 3),
+  'ADA-USD': market('ADA-USD', 'Cardano', 2, 80, '#3b8edb', 5, 2),
+  'SUI-USD': market('SUI-USD', 'Sui', 2, 90, '#6fbcf0', 4, 3),
+  'AAVE-USD': market('AAVE-USD', 'Aave', 2, 100, '#8a75d6', 3, 3),
+  'NEAR-USD': market('NEAR-USD', 'NEAR Protocol', 2, 110, '#b9f3dc', 4, 3),
+  'LTC-USD': market('LTC-USD', 'Litecoin', 3, 120, '#b7bcc7', 3, 4),
 };
 
 export function isMarketSymbol(value: string): value is MarketSymbol {

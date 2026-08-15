@@ -1,7 +1,7 @@
 import { expect, request, test, type BrowserContext, type Page } from '@playwright/test';
 import postgres from 'postgres';
 import { createClient } from 'redis';
-import { databaseUrl } from './database';
+import { databaseUrl, redisUrl } from './database';
 import { E2E } from './fixtures';
 
 const apiUrl = `http://127.0.0.1:${process.env.E2E_API_PORT ?? '4100'}`;
@@ -98,12 +98,22 @@ test.describe.serial('authoritative trading journey', () => {
     await expect(page.locator('.market-selector-trigger')).toContainText('SUI/USD');
     await expect(page.getByRole('group', { name: 'Leverage' }).getByRole('button')).toHaveCount(2);
 
-    await page.request.post(`${apiUrl}/v1/dev/market/advance`, {
-      data: { symbol: 'ETH-USD', price: '4000.00' },
-    });
     await selectMarket('ETH/USD');
-    await page.getByRole('group', { name: 'Leverage' }).getByRole('button', { name: '3x' }).click();
-    await page.getByLabel('Simulated order notional in USD').fill('1000.00');
+    await page.getByRole('group', { name: 'Leverage' }).getByRole('button', { name: '5x' }).click();
+    await page.getByLabel('Margin amount in USD').fill('1000.00');
+    await expect(page.locator('.position-size-preview')).toContainText('$5,000.00');
+    await expect(page.locator('.position-size-preview')).toContainText('$1,000.00 margin');
+    await page
+      .getByRole('group', { name: 'Order sizing mode' })
+      .getByRole('button', { name: 'Position Size' })
+      .click();
+    await page.getByLabel('Position size in USD').fill('5000.00');
+    await expect(page.locator('.position-size-preview')).toContainText('$1,000.00 margin');
+    await page
+      .getByRole('group', { name: 'Order sizing mode' })
+      .getByRole('button', { name: 'Margin' })
+      .click();
+    await page.getByLabel('Margin amount in USD').fill('1000.00');
     await page.getByRole('button', { name: /Take Profit \/ Stop Loss/ }).click();
     await page.getByLabel('TAKE PROFIT').fill('4200.00');
     await page.getByLabel('STOP LOSS').fill('3900.00');
@@ -112,13 +122,20 @@ test.describe.serial('authoritative trading journey', () => {
     await expect(page.getByText('LONG ETH FILLED')).toBeVisible();
     await expect(page.locator('.terminal-table--positions')).toContainText('ETH/USD');
     await expect(page.locator('.terminal-table--positions')).toContainText('LONG');
-    await expect(page.locator('.terminal-table--positions')).toContainText('3x');
+    await expect(page.locator('.terminal-table--positions')).toContainText('5x');
     await expect(page.locator('.terminal-table--positions')).toContainText('Liq. Estimate');
+    await expect(page.locator('.account-metric--position')).toContainText('ETH/USD · LONG 5x');
+    await expect(page.locator('.account-metric--hero')).toContainText('TOTAL P&L');
+    await expect(page.locator('.terminal-account-strip')).toContainText('ACCOUNT EXPOSURE');
 
     await page.request.post(`${apiUrl}/v1/dev/market/advance`, {
       data: { symbol: 'ETH-USD', price: '4100.00' },
     });
     await expect(page.locator('.terminal-table--positions .positive').first()).toBeVisible();
+    await expect(
+      page.locator('.account-metric--position.positive, .account-metric--position .positive'),
+    ).toBeVisible();
+    await expect(page.locator('.account-metric--hero dd')).toHaveClass(/positive/);
 
     page.once('dialog', (dialog) => dialog.accept());
     await page
@@ -128,12 +145,9 @@ test.describe.serial('authoritative trading journey', () => {
       .click();
     await expect(page.getByText('LONG ETH FILLED')).toBeVisible();
 
-    await page.request.post(`${apiUrl}/v1/dev/market/advance`, {
-      data: { symbol: 'BTC-USD', price: '100000.00' },
-    });
     await selectMarket('BTC/USD');
     await page.getByRole('button', { name: 'Limit', exact: true }).click();
-    await page.getByLabel('Simulated order notional in USD').fill('500.00');
+    await page.getByLabel('Margin amount in USD').fill('500.00');
     await page.getByLabel('Limit price').fill('90000.00');
     await page.getByRole('button', { name: 'Create LONG order' }).click();
     await page.getByRole('button', { name: 'Confirm LONG BTC' }).click();
@@ -146,22 +160,28 @@ test.describe.serial('authoritative trading journey', () => {
     await limitRow.getByRole('button', { name: 'Cancel' }).click();
     await expect(page.getByText('Order cancelled')).toBeVisible();
 
-    await page.getByRole('button', { name: '1s', exact: true }).click();
-    await expect(page.getByRole('button', { name: '1s', exact: true })).toHaveClass(/is-active/);
-    const oneSecondHistory = await page.request.get(
-      `${apiUrl}/v1/markets/BTC-USD/candles?interval=1s&limit=240`,
+    await expect(page.getByRole('button', { name: '1s', exact: true })).toHaveCount(0);
+    await page.getByRole('button', { name: '5s', exact: true }).click();
+    await expect(page.getByRole('button', { name: '5s', exact: true })).toHaveClass(/is-active/);
+    const fiveSecondHistory = await page.request.get(
+      `${apiUrl}/v1/markets/BTC-USD/candles?interval=5s&limit=600`,
     );
-    expect(oneSecondHistory.status()).toBe(200);
-    expect((await oneSecondHistory.json()).data).toHaveLength(240);
+    expect(fiveSecondHistory.status()).toBe(200);
+    const fiveSecondBody = await fiveSecondHistory.json();
+    expect(fiveSecondBody.data).toHaveLength(600);
+    const olderFiveSecondHistory = await page.request.get(
+      `${apiUrl}/v1/markets/BTC-USD/candles?interval=5s&limit=600&before=${encodeURIComponent(fiveSecondBody.pagination.nextBefore)}`,
+    );
+    expect(olderFiveSecondHistory.status()).toBe(200);
+    expect((await olderFiveSecondHistory.json()).data).toHaveLength(600);
     await page.request.post(`${apiUrl}/v1/dev/market/advance`, {
       data: { symbol: 'BTC-USD', price: '100050.00' },
     });
-    await page.getByRole('button', { name: '5s', exact: true }).click();
-    await expect(page.getByRole('button', { name: '5s', exact: true })).toHaveClass(/is-active/);
     await page.getByRole('button', { name: '15s', exact: true }).click();
     await page.getByRole('button', { name: '15m', exact: true }).click();
-    await page.getByRole('button', { name: '1s', exact: true }).click();
-    await expect(page.getByRole('button', { name: '1s', exact: true })).toHaveClass(/is-active/);
+    await page.getByRole('button', { name: 'More timeframes' }).click();
+    await page.getByRole('button', { name: /1s Experimental/ }).click();
+    await expect(page.getByRole('button', { name: 'More timeframes' })).toHaveClass(/is-active/);
     await selectMarket('ETH/USD');
     await page.request.post(`${apiUrl}/v1/dev/market/advance`, {
       data: { symbol: 'BTC-USD', price: '100075.00' },
@@ -190,7 +210,7 @@ test.describe.serial('authoritative trading journey', () => {
 
     await page.getByRole('button', { name: /SHORT S/ }).click();
     await page.getByRole('button', { name: 'Market', exact: true }).click();
-    await page.getByLabel('Simulated order notional in USD').fill('500.00');
+    await page.getByLabel('Margin amount in USD').fill('500.00');
     await page.getByRole('button', { name: 'Place SHORT order' }).click();
     await page.getByRole('button', { name: 'Confirm SHORT SOL' }).click();
     await expect(page.getByText('SHORT SOL FILLED')).toBeVisible();
@@ -237,7 +257,7 @@ test.describe.serial('authoritative trading journey', () => {
     await expect(page.locator('.tournament-metrics')).toContainText('PODIUM GAP');
     await expect(page.locator('.tournament-metrics')).toContainText('CASH LINE');
     await page.request.post(`${apiUrl}/v1/dev/market/advance`, {
-      data: { symbol: 'SOL-USD', price: '240.00' },
+      data: { symbol: 'SOL-USD', price: '220.00' },
     });
     await expect(page.locator('.rank-feedback.is-changing')).toContainText('#2', {
       timeout: 10_000,
@@ -424,7 +444,7 @@ test.describe.serial('authoritative trading journey', () => {
         data: { symbol: 'SOL-USD', price: '200.00' },
       }),
     ]);
-    const redis = createClient({ url: process.env.REDIS_URL ?? 'redis://127.0.0.1:6379' });
+    const redis = createClient({ url: redisUrl });
     await redis.connect();
     const websocketRateKeys = await redis.keys('rate:ws-*');
     if (websocketRateKeys.length) await redis.del(websocketRateKeys);
@@ -437,6 +457,9 @@ test.describe.serial('authoritative trading journey', () => {
       page.locator('.market-chart'),
       page.locator('.terminal-close-time'),
       page.locator('.market-freshness'),
+      page.locator('.active-market-price span'),
+      page.locator('.market-watchlist b'),
+      page.locator('.scanner-signals b'),
     ];
     await expect(page).toHaveScreenshot('terminal-desktop.png', {
       fullPage: true,

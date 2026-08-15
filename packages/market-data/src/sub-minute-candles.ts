@@ -1,5 +1,11 @@
 import type { Quantity } from '@trade-the-pool/shared';
-import type { CandleInterval, MarketCandle, MarketSymbol, MarketTrade } from './types.js';
+import type {
+  CandleInterval,
+  MarketCandle,
+  MarketSymbol,
+  MarketTrade,
+  PersistedSubMinuteInterval,
+} from './types.js';
 
 export const SUB_MINUTE_INTERVAL_MS = {
   '1s': 1_000,
@@ -9,13 +15,18 @@ export const SUB_MINUTE_INTERVAL_MS = {
 } as const satisfies Partial<Record<CandleInterval, number>>;
 
 export type SubMinuteInterval = keyof typeof SUB_MINUTE_INTERVAL_MS;
+/** Central retention policy for compact completed bars. */
+export const SUB_MINUTE_RETENTION_MS: Record<PersistedSubMinuteInterval, number> = {
+  '5s': 24 * 60 * 60 * 1_000,
+  '15s': 7 * 24 * 60 * 60 * 1_000,
+  '30s': 7 * 24 * 60 * 60 * 1_000,
+};
 
-/** Bounded in-process history; restart recovery intentionally begins with new genuine trades. */
 export const DEFAULT_SUB_MINUTE_RETENTION: Record<SubMinuteInterval, number> = {
   '1s': 2 * 60 * 60,
-  '5s': (12 * 60 * 60) / 5,
-  '15s': (24 * 60 * 60) / 15,
-  '30s': (48 * 60 * 60) / 30,
+  '5s': SUB_MINUTE_RETENTION_MS['5s'] / SUB_MINUTE_INTERVAL_MS['5s'],
+  '15s': SUB_MINUTE_RETENTION_MS['15s'] / SUB_MINUTE_INTERVAL_MS['15s'],
+  '30s': SUB_MINUTE_RETENTION_MS['30s'] / SUB_MINUTE_INTERVAL_MS['30s'],
 };
 
 type CurrentSecond = { candle: MarketCandle; hasTrade: boolean; lastTradeTimestamp: number | null };
@@ -24,6 +35,7 @@ type SymbolState = {
   buffers: Record<SubMinuteInterval, MarketCandle[]>;
   lastTradeReceived: Date | null;
   lastFinalized: Date | null;
+  lastFinalizedBuckets: Record<PersistedSubMinuteInterval, number | null>;
 };
 
 const clone = (candle: MarketCandle): MarketCandle => ({
@@ -42,6 +54,11 @@ export class SubMinuteCandleAggregator {
       candle: MarketCandle,
     ) => void,
     private readonly retention = DEFAULT_SUB_MINUTE_RETENTION,
+    private readonly persistCompleted: (
+      symbol: MarketSymbol,
+      interval: PersistedSubMinuteInterval,
+      candle: MarketCandle,
+    ) => void = () => undefined,
   ) {
     for (const symbol of symbols)
       this.#states.set(symbol, {
@@ -49,6 +66,7 @@ export class SubMinuteCandleAggregator {
         buffers: { '1s': [], '5s': [], '15s': [], '30s': [] },
         lastTradeReceived: null,
         lastFinalized: null,
+        lastFinalizedBuckets: { '5s': null, '15s': null, '30s': null },
       });
   }
 
@@ -114,6 +132,52 @@ export class SubMinuteCandleAggregator {
     return (this.#states.get(symbol)?.buffers[interval] ?? []).slice(-limit).map(clone);
   }
 
+  /** Restores durable completed bars without replaying them as live events. */
+  restoreCompleted(
+    symbol: MarketSymbol,
+    interval: PersistedSubMinuteInterval,
+    candles: readonly MarketCandle[],
+  ): void {
+    const state = this.#states.get(symbol);
+    if (!state) return;
+    for (const candle of [...candles].sort((left, right) => +left.timestamp - +right.timestamp))
+      this.upsert(state.buffers[interval], candle, this.retention[interval]);
+    const latest = state.buffers[interval].at(-1);
+    if (latest) state.lastFinalizedBuckets[interval] = latest.timestamp.getTime();
+  }
+
+  /** Seeds continuity only across a short, known-healthy restart boundary. */
+  seedFromCompleted(
+    symbol: MarketSymbol,
+    candle: MarketCandle,
+    now: Date,
+    maximumAgeMs: number,
+  ): boolean {
+    const state = this.#states.get(symbol);
+    const nextTimestamp = candle.timestamp.getTime() + SUB_MINUTE_INTERVAL_MS['5s'];
+    if (
+      !state ||
+      state.current ||
+      now.getTime() < nextTimestamp ||
+      now.getTime() - nextTimestamp > maximumAgeMs
+    )
+      return false;
+    state.current = {
+      hasTrade: false,
+      lastTradeTimestamp: null,
+      candle: {
+        timestamp: new Date(nextTimestamp),
+        open: candle.close,
+        high: candle.close,
+        low: candle.close,
+        close: candle.close,
+        volume: 0n as Quantity,
+      },
+    };
+    this.upsertOneSecond(symbol, state, state.current.candle);
+    return true;
+  }
+
   diagnostics(symbol: MarketSymbol, now = Date.now()) {
     const state = this.#states.get(symbol)!;
     return {
@@ -171,6 +235,20 @@ export class SubMinuteCandleAggregator {
     for (const interval of ['5s', '15s', '30s'] as const) {
       const duration = SUB_MINUTE_INTERVAL_MS[interval];
       const bucket = Math.floor(candle.timestamp.getTime() / duration) * duration;
+      if (candle.timestamp.getTime() === bucket) {
+        const completedBucket = bucket - duration;
+        const completed = state.buffers[interval].find(
+          (item) => item.timestamp.getTime() === completedBucket,
+        );
+        if (
+          completed &&
+          (state.lastFinalizedBuckets[interval] === null ||
+            completedBucket > state.lastFinalizedBuckets[interval]!)
+        ) {
+          state.lastFinalizedBuckets[interval] = completedBucket;
+          this.persistCompleted(symbol, interval, clone(completed));
+        }
+      }
       const children: MarketCandle[] = [];
       for (let index = state.buffers['1s'].length - 1; index >= 0; index -= 1) {
         const child = state.buffers['1s'][index];

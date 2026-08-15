@@ -6,7 +6,7 @@ import type {
   EntrySummaryDto,
   FillHistoryDto,
   LeaderboardPageDto,
-  MarketCandleDto,
+  MarketCandlePageDto,
   MarketOrderBookDto,
   MarketSnapshotDto,
   MarketSymbolDto,
@@ -185,11 +185,12 @@ export const api = {
   candles: (
     symbol: MarketSymbolDto,
     interval: CandleIntervalDto,
-    limit = 240,
+    limit = 600,
+    before?: string,
     signal?: AbortSignal,
   ) =>
-    request<ApiEnvelope<MarketCandleDto[]>>(
-      `/v1/markets/${symbol}/candles?interval=${interval}&limit=${limit}`,
+    request<MarketCandlePageDto>(
+      `/v1/markets/${symbol}/candles?interval=${interval}&limit=${limit}${before ? `&before=${encodeURIComponent(before)}` : ''}`,
       { signal },
     ),
   book: (symbol: MarketSymbolDto, depth = 25, signal?: AbortSignal) =>

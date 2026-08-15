@@ -46,7 +46,7 @@ ALTER TABLE "orders" ADD CONSTRAINT "orders_request_shape_valid" CHECK (
   (intent = 'CLOSE' AND requested_notional IS NULL AND ((requested_quantity IS NOT NULL)::int + (requested_percentage_bps IS NOT NULL)::int) = 1)
 );
 ALTER TABLE "orders" ADD CONSTRAINT "orders_price_shape_valid" CHECK (
-  (order_type = 'MARKET' AND limit_price IS NULL AND trigger_price IS NULL)
+  (order_type::text IN ('MARKET', 'LIQUIDATION') AND limit_price IS NULL AND trigger_price IS NULL)
   OR
   (order_type = 'LIMIT' AND limit_price IS NOT NULL AND trigger_price IS NULL)
   OR

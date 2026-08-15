@@ -135,3 +135,12 @@ export function formatChartTimestamp(
     ...(timeZone ? { timeZone } : {}),
   }).format(new Date(timestampSeconds * 1_000));
 }
+
+export function preservedRangeAfterPrepend(
+  range: { from: number; to: number },
+  previousCount: number,
+  nextCount: number,
+): { from: number; to: number } {
+  const prepended = Math.max(0, nextCount - previousCount);
+  return { from: range.from + prepended, to: range.to + prepended };
+}

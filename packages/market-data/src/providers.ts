@@ -7,6 +7,7 @@ import {
   SUPPORTED_SYMBOLS,
   canonicalSymbol,
   type CandleInterval,
+  type CandleHistoryRequest,
   type MarketCandle,
   type MarketOrderBook,
   type MarketPriceSnapshot,
@@ -39,7 +40,7 @@ export interface UpstreamMarketDataAdapter {
   getCandles?(
     symbol: MarketSymbol,
     interval: CandleInterval,
-    limit: number,
+    request: number | CandleHistoryRequest,
   ): Promise<MarketCandle[]>;
 }
 
@@ -411,7 +412,7 @@ export class KrakenMarketDataAdapter extends ReconnectingAdapter {
   async getCandles(
     symbol: MarketSymbol,
     interval: CandleInterval,
-    limit: number,
+    request: number | CandleHistoryRequest,
   ): Promise<MarketCandle[]> {
     if (!(interval in KRAKEN_INTERVALS))
       throw new Error('Kraken OHLC does not provide sub-minute candles');
@@ -430,6 +431,7 @@ export class KrakenMarketDataAdapter extends ReconnectingAdapter {
       ([key, value]) => key !== 'last' && Array.isArray(value),
     )?.[1];
     if (!Array.isArray(rows)) throw new Error('Kraken OHLC response did not contain candles');
+    const normalizedRequest = typeof request === 'number' ? { limit: request } : request;
     return rows
       .map((row): MarketCandle | null => {
         if (!Array.isArray(row) || row.length < 7) return null;
@@ -446,7 +448,12 @@ export class KrakenMarketDataAdapter extends ReconnectingAdapter {
       })
       .filter((candle): candle is MarketCandle => candle !== null)
       .sort((left, right) => +left.timestamp - +right.timestamp)
-      .slice(-limit);
+      .filter(
+        (candle) =>
+          !normalizedRequest.before ||
+          candle.timestamp.getTime() < normalizedRequest.before.getTime(),
+      )
+      .slice(-normalizedRequest.limit);
   }
 }
 

@@ -34,6 +34,20 @@ Partial closes release margin in exact proportion to quantity; the final close r
 remainder. Orders, fills, and positions persist leverage. Positions additionally persist margin
 used and the current liquidation estimate.
 
+The professional API and ticket make the sizing unit explicit. New opens send exactly one
+server-validated input:
+
+```text
+MARGIN:        position notional = exact margin amount * leverage
+POSITION_SIZE: required margin   = ceil-to-cent(position notional / leverage)
+```
+
+The ticket defaults to `MARGIN`; `$1,000` at `5x` becomes a `$5,000` position requiring `$1,000`
+initial margin. Entering `$5,000` in `POSITION_SIZE` produces the same stored requested notional,
+risk checks, fill path, and accounting. Fixed-precision server domain logic repeats the conversion;
+it does not trust a browser preview. Legacy paper buy requests retain their 1x notional meaning,
+while the former ambiguous professional `notional` field is rejected.
+
 ## Cash, equity, and P&L
 
 Leverage never multiplies price P&L. Long buys debit the full simulated purchase amount and shorts
@@ -70,14 +84,15 @@ bankruptcy socialization, derivatives, real custody, or exchange routing.
 
 ## Terminal feedback and scanner semantics
 
-The account strip reports equity, available margin, margin used, gross exposure, realized P&L,
-unrealized P&L, and starting bankroll from server snapshots. Position rows show direction,
+The account strip leads with authoritative total P&L/return, equity, selected-position P&L/ROI,
+and account exposure (`gross exposure / equity`). Available margin, margin used, raw exposure,
+realized/open P&L, and starting bankroll remain as quieter support. Position rows show direction,
 leverage, notional, margin, liquidation price, P&L/ROI, protection, and close controls. Rank delta,
 cash-line distance, podium gap, and projected payout are derived only from authoritative
 leaderboard and payout snapshots.
 
-The Market Pulse ranks the bulk `GET /v1/markets` snapshot using genuine 24-hour change and
-high/low range fields. It labels top mover, widest range, and upside leader; it does not invent
-volume, order-flow, or short-window momentum when the provider has not supplied those fields. The
+The Market Pulse prefers genuine cached 15-minute movement and 5-minute range fields, then falls
+back to genuine 24-hour change/high-low statistics. It never invents volume, order-flow, or
+short-window momentum when enough candles are unavailable. The
 bulk query refreshes the watchlist periodically, while only the selected market receives the
 high-frequency realtime subscription.

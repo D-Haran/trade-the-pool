@@ -9,7 +9,7 @@ import type {
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { api } from '@/lib/api-client';
-import { formatPrice, formatQuantity } from '@/lib/format';
+import { formatCompactQuantity, formatPrice } from '@/lib/format';
 import { queryKeys } from '@/lib/query-keys';
 import { realtimeClient } from '@/lib/realtime-client';
 import { cn } from '@/lib/cn';
@@ -177,15 +177,15 @@ export function MarketDepthPanel({
                   {asks.map((level) => (
                     <div className="depth-row" key={`ask-${level.price}`}>
                       <i style={{ width: percentageWidth(level.total, maximumTotal) }} />
-                      <span className="negative">{formatPrice(level.price)}</span>
-                      <span>{formatQuantity(level.quantity)}</span>
-                      <span>{formatQuantity(level.total)}</span>
+                      <span className="negative">{formatPrice(level.price, symbol)}</span>
+                      <span>{formatCompactQuantity(level.quantity)}</span>
+                      <span>{formatCompactQuantity(level.total)}</span>
                     </div>
                   ))}
                 </div>
                 <div className="depth-spread">
                   <strong className="tabular">
-                    {orderBook.spread ? formatPrice(orderBook.spread) : '—'}
+                    {orderBook.spread ? formatPrice(orderBook.spread, symbol) : '—'}
                   </strong>
                   <span>{spreadPercent}</span>
                 </div>
@@ -193,9 +193,9 @@ export function MarketDepthPanel({
                   {bids.map((level) => (
                     <div className="depth-row" key={`bid-${level.price}`}>
                       <i style={{ width: percentageWidth(level.total, maximumTotal) }} />
-                      <span className="positive">{formatPrice(level.price)}</span>
-                      <span>{formatQuantity(level.quantity)}</span>
-                      <span>{formatQuantity(level.total)}</span>
+                      <span className="positive">{formatPrice(level.price, symbol)}</span>
+                      <span>{formatCompactQuantity(level.quantity)}</span>
+                      <span>{formatCompactQuantity(level.total)}</span>
                     </div>
                   ))}
                 </div>
@@ -221,9 +221,9 @@ export function MarketDepthPanel({
                       trade.side === 'BUY' ? 'positive' : trade.side === 'SELL' ? 'negative' : ''
                     }
                   >
-                    {formatPrice(trade.price)}
+                    {formatPrice(trade.price, symbol)}
                   </span>
-                  <span>{formatQuantity(trade.quantity)}</span>
+                  <span>{formatCompactQuantity(trade.quantity)}</span>
                   <span>
                     {new Intl.DateTimeFormat('en-US', {
                       hour: '2-digit',

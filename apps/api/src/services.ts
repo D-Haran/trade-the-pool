@@ -41,6 +41,7 @@ import {
   setPositionProtection,
   submitTradingOrder,
   type EntryFeeTier,
+  type ProfessionalOrderResult,
   type TradingOrderRequest,
 } from '@trade-the-pool/trading-engine';
 import type { KeyValueStore } from './infrastructure.js';
@@ -488,6 +489,8 @@ export class LeaderboardService {
 }
 
 export class TradingApiService {
+  private readonly marketTickQueues = new Map<MarketSymbol, Promise<ProfessionalOrderResult[]>>();
+
   constructor(
     private readonly db: Database,
     private readonly market: MarketPriceProvider,
@@ -553,20 +556,39 @@ export class TradingApiService {
     return { ...result, account: snapshot };
   }
 
-  async processMarketTick(symbol: MarketSymbol) {
+  processMarketTick(symbol: MarketSymbol): Promise<ProfessionalOrderResult[]> {
+    const prior = this.marketTickQueues.get(symbol) ?? Promise.resolve([]);
+    const current = prior.catch(() => []).then(() => this.processMarketTickSerially(symbol));
+    this.marketTickQueues.set(symbol, current);
+    const release = () => {
+      if (this.marketTickQueues.get(symbol) === current) this.marketTickQueues.delete(symbol);
+    };
+    void current.then(release, release);
+    return current;
+  }
+
+  private async processMarketTickSerially(symbol: MarketSymbol) {
     const liquidations = await processLiquidations(this.db, this.market, symbol);
     const conditional = await processConditionalOrders(this.db, this.market, symbol);
     const results = [...liquidations, ...conditional];
-    for (const result of results) {
+    const openPositionEntries = await this.db
+      .select({ entryId: positions.entryId })
+      .from(positions)
+      .where(and(eq(positions.symbol, symbol), sql`${positions.quantity} > 0`));
+    const affectedEntryIds = new Set([
+      ...results.map((result) => result.order.entryId),
+      ...openPositionEntries.map((position) => position.entryId),
+    ]);
+    for (const entryId of affectedEntryIds) {
       const [entry] = await this.db
         .select({ tournamentId: tournamentEntries.tournamentId })
         .from(tournamentEntries)
-        .where(eq(tournamentEntries.id, result.order.entryId));
-      const snapshot = await this.snapshots.get(result.order.entryId);
-      if (entry) await this.leaderboards.refreshEntry(entry.tournamentId, result.order.entryId);
-      this.events.publish(`entry:${result.order.entryId}`, {
+        .where(eq(tournamentEntries.id, entryId));
+      const snapshot = await this.snapshots.get(entryId);
+      if (entry) await this.leaderboards.refreshEntry(entry.tournamentId, entryId);
+      this.events.publish(`entry:${entryId}`, {
         type: 'entry.account_updated',
-        entryId: result.order.entryId,
+        entryId,
         cash: snapshot.cash,
         realizedPnL: snapshot.realizedPnL,
         unrealizedPnL: snapshot.unrealizedPnL,

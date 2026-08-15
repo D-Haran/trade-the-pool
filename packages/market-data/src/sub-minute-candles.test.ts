@@ -111,4 +111,52 @@ describe('SubMinuteCandleAggregator', () => {
     aggregator.advanceTo(new Date('2026-08-14T18:00:10Z'));
     expect(aggregator.getCandles('BTC-USD', '1s', 10)).toEqual([]);
   });
+
+  it('finalizes completed derived buckets on the clock and reports them once for persistence', () => {
+    const completed: Array<{ interval: string; timestamp: string }> = [];
+    const aggregator = new SubMinuteCandleAggregator(
+      ['BTC-USD'],
+      () => undefined,
+      undefined,
+      (_symbol, interval, candle) =>
+        completed.push({ interval, timestamp: candle.timestamp.toISOString() }),
+    );
+    aggregator.ingestTrade('BTC-USD', trade('2026-08-14T18:00:00.100Z', '100'));
+    aggregator.advanceTo(new Date('2026-08-14T18:00:31.100Z'));
+
+    for (const interval of ['5s', '15s', '30s'] as const) {
+      const timestamps = aggregator
+        .getCandles('BTC-USD', interval, 100)
+        .map((candle) => candle.timestamp.getTime());
+      const duration = { '5s': 5_000, '15s': 15_000, '30s': 30_000 }[interval];
+      expect(
+        timestamps.every(
+          (value, index) => index === 0 || value - timestamps[index - 1] === duration,
+        ),
+      ).toBe(true);
+    }
+    expect(completed.filter((item) => item.interval === '5s')).toEqual(
+      ['00', '05', '10', '15', '20', '25'].map((second) => ({
+        interval: '5s',
+        timestamp: `2026-08-14T18:00:${second}.000Z`,
+      })),
+    );
+    expect(completed.filter((item) => item.interval === '30s')).toEqual([
+      { interval: '30s', timestamp: '2026-08-14T18:00:00.000Z' },
+    ]);
+  });
+
+  it('restores completed bars without duplicate timestamps', () => {
+    const aggregator = new SubMinuteCandleAggregator(['BTC-USD'], () => undefined);
+    const candle = {
+      timestamp: new Date('2026-08-14T18:00:00Z'),
+      open: parsePrice('100'),
+      high: parsePrice('101'),
+      low: parsePrice('99'),
+      close: parsePrice('100'),
+      volume: parseQuantity('1'),
+    };
+    aggregator.restoreCompleted('BTC-USD', '5s', [candle, candle]);
+    expect(aggregator.getCandles('BTC-USD', '5s', 10)).toHaveLength(1);
+  });
 });

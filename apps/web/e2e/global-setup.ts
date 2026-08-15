@@ -1,6 +1,6 @@
 import postgres from 'postgres';
 import { createClient } from 'redis';
-import { cleanFixtures, databaseUrl } from './database';
+import { cleanFixtures, databaseUrl, redisUrl } from './database';
 import { E2E } from './fixtures';
 
 export default async function globalSetup(): Promise<void> {
@@ -40,7 +40,7 @@ export default async function globalSetup(): Promise<void> {
       (${E2E.completedTournamentId}, 0, 0.00, NULL, 30.00, 25.00, 5.00, 0.00)
   `;
   await sql.end();
-  const redis = createClient({ url: process.env.REDIS_URL ?? 'redis://127.0.0.1:6379' });
+  const redis = createClient({ url: redisUrl });
   await redis.connect();
   const rateKeys = await redis.keys('rate:*');
   if (rateKeys.length) await redis.del(rateKeys);

@@ -10,10 +10,12 @@ import { RedisKeyValueStore } from './infrastructure.js';
 import { RealtimeHub, connectMarketRealtime } from './realtime.js';
 import { AccountSnapshotService, LeaderboardService, TradingApiService } from './services.js';
 import { settleDueTournaments } from '@trade-the-pool/trading-engine';
+import { PostgresSubMinuteCandleStore } from './candle-storage.js';
 
 const connection = createDatabase(config.DATABASE_URL);
 const store = new RedisKeyValueStore(config.REDIS_URL);
 await store.connect();
+const subMinuteStore = new PostgresSubMinuteCandleStore(connection.db);
 const market =
   config.MARKET_DATA_MODE === 'live'
     ? createLiveMarketDataService({
@@ -46,9 +48,10 @@ const market =
           comparisonStaleMs: config.MARKET_COMPARISON_STALE_MS,
           maximumDeviationBasisPoints: config.MARKET_MAX_DEVIATION_BPS,
         },
+        subMinuteStore,
       })
     : new DeterministicMarketPriceSource();
-if ('start' in market) market.start();
+if ('start' in market) await market.start();
 const hub = new RealtimeHub();
 const snapshots = new AccountSnapshotService(connection.db, market);
 const leaderboards = new LeaderboardService(connection.db, snapshots, store, hub);

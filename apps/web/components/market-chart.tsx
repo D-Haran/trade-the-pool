@@ -17,7 +17,7 @@ import {
   type UTCTimestamp,
 } from 'lightweight-charts';
 import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api-client';
 import { formatPrice } from '@/lib/format';
 import { queryKeys } from '@/lib/query-keys';
@@ -30,6 +30,7 @@ import {
   formatChartTimestamp,
   macd,
   relativeStrengthIndex,
+  preservedRangeAfterPrepend,
   simpleMovingAverage,
   volumeWeightedAveragePrice,
   type ExactChartCandle,
@@ -66,16 +67,37 @@ export function MarketChart({
   } | null>(null);
   const volumeSeries = useRef<ISeriesApi<'Histogram'> | null>(null);
   const positionLines = useRef<IPriceLine[]>([]);
+  const initialViewportKey = useRef('');
+  const pendingPrepend = useRef<{ from: number; to: number; count: number } | null>(null);
+  const fetchOlderRef = useRef<() => void>(() => undefined);
+  const canFetchOlderRef = useRef(false);
+  const fetchingOlderRef = useRef(false);
   const [crosshair, setCrosshair] = useState<ExactChartCandle | null>(null);
   const [subMinuteStatus, setSubMinuteStatus] = useState<'LIVE' | 'STALE' | 'UNAVAILABLE' | null>(
     null,
   );
   const indicatorKey = useMemo(() => JSON.stringify(indicators), [indicators]);
   const subMinute = CANDLE_INTERVAL_SECONDS[interval] < 60;
-  const candles = useQuery({
+  const candles = useInfiniteQuery({
     queryKey: queryKeys.candles(symbol, interval),
-    queryFn: ({ signal }) => api.candles(symbol, interval, 240, signal),
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ signal, pageParam }) => api.candles(symbol, interval, 600, pageParam, signal),
+    getNextPageParam: (lastPage) =>
+      lastPage.pagination.hasMore ? (lastPage.pagination.nextBefore ?? undefined) : undefined,
   });
+  fetchOlderRef.current = () => {
+    if (!canFetchOlderRef.current || fetchingOlderRef.current) return;
+    const range = chart.current?.timeScale().getVisibleLogicalRange();
+    if (range)
+      pendingPrepend.current = {
+        from: range.from,
+        to: range.to,
+        count: candleState.current.length,
+      };
+    void candles.fetchNextPage();
+  };
+  canFetchOlderRef.current = Boolean(candles.hasNextPage);
+  fetchingOlderRef.current = candles.isFetchingNextPage;
 
   const updateIndicators = () => {
     const data = candleState.current;
@@ -224,8 +246,13 @@ export function MarketChart({
       else if ('open' in point) setCrosshair(point as ExactChartCandle);
     };
     apiChart.subscribeCrosshairMove(crosshairHandler);
+    const logicalRangeHandler = (range: { from: number; to: number } | null) => {
+      if (range && range.from < 40) fetchOlderRef.current();
+    };
+    apiChart.timeScale().subscribeVisibleLogicalRangeChange(logicalRangeHandler);
     return () => {
       apiChart.unsubscribeCrosshairMove(crosshairHandler);
+      apiChart.timeScale().unsubscribeVisibleLogicalRangeChange(logicalRangeHandler);
       apiChart.remove();
       chart.current = null;
       mainSeries.current = null;
@@ -284,7 +311,20 @@ export function MarketChart({
 
   useEffect(() => {
     if (!mainSeries.current || !candles.data) return;
-    const data = candles.data.data.map(chartCandle);
+    const viewportKey = `${symbol}:${interval}`;
+    const newContext = initialViewportKey.current !== viewportKey;
+    const byTime = new Map<number, ExactChartCandle>();
+    for (const page of [...candles.data.pages].reverse())
+      for (const candle of page.data.map(chartCandle)) byTime.set(candle.time, candle);
+    if (!newContext) {
+      const latestServerCandle = candles.data.pages[0]?.data.at(-1);
+      const latestServerTime = latestServerCandle ? chartCandle(latestServerCandle).time : 0;
+      for (const candle of candleState.current)
+        if (!byTime.has(candle.time) || candle.time >= latestServerTime)
+          byTime.set(candle.time, candle);
+    }
+    const data = [...byTime.values()].sort((left, right) => left.time - right.time);
+    const previousCount = candleState.current.length;
     candleState.current = data;
     if (chartType === 'CANDLES') (mainSeries.current as ISeriesApi<'Candlestick'>).setData(data);
     else
@@ -292,11 +332,32 @@ export function MarketChart({
         data.map((candle) => ({ time: candle.time, value: candle.close })),
       );
     updateIndicators();
-    const visibleBars = interval === '1s' ? 180 : 240;
-    chart.current?.timeScale().setVisibleLogicalRange({
-      from: Math.max(0, data.length - visibleBars),
-      to: Math.max(visibleBars, data.length - 1) + 2,
-    });
+    const pending = pendingPrepend.current;
+    if (pending && data.length > pending.count) {
+      chart.current
+        ?.timeScale()
+        .setVisibleLogicalRange(preservedRangeAfterPrepend(pending, pending.count, data.length));
+      pendingPrepend.current = null;
+    } else if (newContext) {
+      const visibleBars: Record<CandleIntervalDto, number> = {
+        '1s': 180,
+        '5s': 360,
+        '15s': 240,
+        '30s': 240,
+        '1m': 300,
+        '5m': 180,
+        '15m': 160,
+        '1h': 120,
+        '4h': 120,
+        '1d': 120,
+      };
+      const visible = Math.min(data.length, visibleBars[interval]);
+      chart.current?.timeScale().setVisibleLogicalRange({
+        from: Math.max(0, data.length - visible),
+        to: Math.max(0, data.length - 1) + 2,
+      });
+      initialViewportKey.current = viewportKey;
+    } else if (data.length === previousCount) pendingPrepend.current = null;
   }, [candles.data, symbol, interval, chartType, indicatorKey]);
 
   useEffect(() => {
@@ -343,7 +404,7 @@ export function MarketChart({
       if (current?.time === next.time) candleState.current[candleState.current.length - 1] = next;
       else {
         candleState.current.push(next);
-        if (candleState.current.length > 500) candleState.current.shift();
+        if (candleState.current.length > 50_000) candleState.current.shift();
       }
       if (chartType === 'CANDLES') (mainSeries.current as ISeriesApi<'Candlestick'>).update(next);
       else
@@ -370,10 +431,10 @@ export function MarketChart({
     <div className="chart-wrap">
       {crosshair ? (
         <div className="chart-ohlc tabular" aria-live="polite">
-          <span>O {formatPrice(String(crosshair.open))}</span>
-          <span>H {formatPrice(String(crosshair.high))}</span>
-          <span>L {formatPrice(String(crosshair.low))}</span>
-          <span>C {formatPrice(String(crosshair.close))}</span>
+          <span>O {formatPrice(String(crosshair.open), symbol)}</span>
+          <span>H {formatPrice(String(crosshair.high), symbol)}</span>
+          <span>L {formatPrice(String(crosshair.low), symbol)}</span>
+          <span>C {formatPrice(String(crosshair.close), symbol)}</span>
         </div>
       ) : null}
       {candles.isLoading ? (
@@ -386,14 +447,27 @@ export function MarketChart({
           <ErrorState title="Chart history unavailable" retry={() => candles.refetch()} />
         </div>
       ) : null}
-      {!candles.isLoading && !candles.isError && subMinute && candles.data?.data.length === 0 ? (
+      {!candles.isLoading &&
+      !candles.isError &&
+      subMinute &&
+      !candles.data?.pages[0]?.data.length ? (
         <div className="chart-overlay">
           <ErrorState title={`${interval} market data is temporarily unavailable`} />
         </div>
       ) : null}
-      {subMinute && subMinuteStatus && subMinuteStatus !== 'LIVE' && candles.data?.data.length ? (
-        <div className="chart-overlay">
-          <ErrorState title={`${interval} market data is temporarily unavailable`} />
+      {candles.isFetchingNextPage ? (
+        <div className="chart-history-status" role="status">
+          Loading older history…
+        </div>
+      ) : !candles.hasNextPage && candles.data?.pages.length && candles.data.pages.length > 1 ? (
+        <div className="chart-history-status">Beginning of available exchange history</div>
+      ) : null}
+      {subMinute &&
+      subMinuteStatus &&
+      subMinuteStatus !== 'LIVE' &&
+      candles.data?.pages[0]?.data.length ? (
+        <div className="chart-stale-status">
+          {interval} feed {subMinuteStatus.toLowerCase()}
         </div>
       ) : null}
       <div

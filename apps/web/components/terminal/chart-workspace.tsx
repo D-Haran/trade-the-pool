@@ -11,6 +11,7 @@ import {
   CandlestickChart,
   Expand,
   LineChart,
+  MoreHorizontal,
   RotateCcw,
   SlidersHorizontal,
   X,
@@ -24,7 +25,9 @@ import {
 } from '@/lib/terminal-store';
 import { ChartBoundary, MarketChart } from '../market-chart';
 
-const intervals: readonly CandleIntervalDto[] = CANDLE_INTERVALS;
+const intervals: readonly CandleIntervalDto[] = CANDLE_INTERVALS.filter(
+  (interval) => interval !== '1s',
+);
 const indicatorLabels: Record<IndicatorKey, { label: string; description: string }> = {
   SMA: { label: 'SMA', description: 'Simple moving average' },
   EMA: { label: 'EMA', description: 'Exponential moving average' },
@@ -119,6 +122,7 @@ export function ChartWorkspace({
   const [indicatorOpen, setIndicatorOpen] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [resetToken, setResetToken] = useState(0);
+  const [moreOpen, setMoreOpen] = useState(false);
   const activeCount = Object.values(indicators).filter((indicator) => indicator.enabled).length;
   const setType = (type: ChartType) => setChartType(type);
   return (
@@ -134,6 +138,28 @@ export function ChartWorkspace({
               {item}
             </button>
           ))}
+          <div className="timeframe-more">
+            <button
+              className={interval === '1s' ? 'is-active' : ''}
+              onClick={() => setMoreOpen((value) => !value)}
+              aria-label="More timeframes"
+            >
+              <MoreHorizontal aria-hidden="true" />
+            </button>
+            {moreOpen ? (
+              <div className="timeframe-more__menu">
+                <button
+                  className={interval === '1s' ? 'is-active' : ''}
+                  onClick={() => {
+                    setInterval('1s');
+                    setMoreOpen(false);
+                  }}
+                >
+                  1s <small>Experimental</small>
+                </button>
+              </div>
+            ) : null}
+          </div>
         </div>
         <div className="chart-toolbar__actions">
           <div className="chart-type-toggle" aria-label="Chart type">

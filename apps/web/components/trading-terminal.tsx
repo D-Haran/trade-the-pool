@@ -73,8 +73,15 @@ function Terminal({ slug, entryId }: { slug: string; entryId: string }) {
   const [switching, setSwitching] = useState(false);
   const [depthCollapsed, setDepthCollapsed] = useState(false);
   const retryRef = useRef<{ fingerprint: string; key: string } | null>(null);
+  const marketProjectionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => setSwitching(false), [entryId]);
+  useEffect(
+    () => () => {
+      if (marketProjectionTimerRef.current) clearTimeout(marketProjectionTimerRef.current);
+    },
+    [],
+  );
   useEffect(() => {
     const selected = new URLSearchParams(window.location.search).get('symbol');
     if (symbols.includes(selected as MarketSymbolDto)) setSymbol(selected as MarketSymbolDto);
@@ -84,6 +91,7 @@ function Terminal({ slug, entryId }: { slug: string; entryId: string }) {
     queryKey: queryKeys.entry(entryId),
     queryFn: () => api.entry(entryId),
     retry: false,
+    refetchInterval: 5_000,
   });
   const confirmed = entry.data?.data.id === entryId;
   const tournamentId = entry.data?.data.tournament.id;
@@ -108,6 +116,7 @@ function Terminal({ slug, entryId }: { slug: string; entryId: string }) {
     queryFn: () => api.positions(entryId),
     enabled: confirmed,
     retry: false,
+    refetchInterval: 5_000,
   });
   const orders = useQuery({
     queryKey: queryKeys.orders(entryId),
@@ -131,6 +140,7 @@ function Terminal({ slug, entryId }: { slug: string; entryId: string }) {
     queryKey: queryKeys.leaderboard(tournamentId ?? 'pending'),
     queryFn: () => api.leaderboard(tournamentId!),
     enabled: Boolean(tournamentId),
+    refetchInterval: 5_000,
   });
 
   const marketMap = useMemo(
@@ -156,7 +166,7 @@ function Terminal({ slug, entryId }: { slug: string; entryId: string }) {
     ]);
 
   const handleEvent = (event: RealtimeEvent) => {
-    if (event.type === 'market.price')
+    if (event.type === 'market.price') {
       queryClient.setQueryData<ApiEnvelope<MarketSnapshotDto[]>>(queryKeys.markets, (current) =>
         current
           ? {
@@ -178,6 +188,20 @@ function Terminal({ slug, entryId }: { slug: string; entryId: string }) {
             }
           : current,
       );
+      if (event.symbol === symbol && !marketProjectionTimerRef.current) {
+        marketProjectionTimerRef.current = setTimeout(() => {
+          marketProjectionTimerRef.current = null;
+          void Promise.all([
+            queryClient.invalidateQueries({ queryKey: queryKeys.entry(entryId) }),
+            queryClient.invalidateQueries({ queryKey: queryKeys.positions(entryId) }),
+            queryClient.invalidateQueries({ queryKey: ['entries'] }),
+            tournamentId
+              ? queryClient.invalidateQueries({ queryKey: queryKeys.leaderboard(tournamentId) })
+              : Promise.resolve(),
+          ]);
+        }, 500);
+      }
+    }
     if (event.type === 'market.status')
       queryClient.setQueryData<ApiEnvelope<MarketSnapshotDto[]>>(queryKeys.markets, (current) =>
         current
@@ -432,8 +456,9 @@ function Terminal({ slug, entryId }: { slug: string; entryId: string }) {
           onSubmit={sendOrder}
         />
       </div>
-      <AccountStrip account={account} />
+      <AccountStrip account={account} activePosition={activePosition} />
       <TerminalPanels
+        activeSymbol={symbol}
         positions={positions.data?.data ?? []}
         orders={orders.data?.data ?? []}
         fills={fills.data?.data ?? []}

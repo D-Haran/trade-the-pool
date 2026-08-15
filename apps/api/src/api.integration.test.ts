@@ -211,9 +211,24 @@ describe('V1 HTTP API', () => {
     expect(candles.json().data).toHaveLength(24);
     expect(candles.json().data.at(-1)).toMatchObject({
       close: '100000.00000000',
-      volume: null,
+      volume: expect.stringMatching(/^\d+\.\d{8}$/),
     });
     expect(candles.json().provenance).toBe('deterministic-memory-v1');
+
+    const deepHistory = await app.inject({
+      method: 'GET',
+      url: '/v1/markets/BTC-USD/candles?interval=1m&limit=600',
+    });
+    expect(deepHistory.json().data).toHaveLength(600);
+    const oldest = deepHistory.json().pagination.nextBefore;
+    const olderHistory = await app.inject({
+      method: 'GET',
+      url: `/v1/markets/BTC-USD/candles?interval=1m&limit=600&before=${encodeURIComponent(oldest)}`,
+    });
+    expect(olderHistory.json().data).toHaveLength(600);
+    expect(new Date(olderHistory.json().data.at(-1).timestamp).getTime()).toBeLessThan(
+      new Date(deepHistory.json().data[0].timestamp).getTime(),
+    );
 
     const seconds = await app.inject({
       method: 'GET',
@@ -500,8 +515,8 @@ describe('V1 HTTP API', () => {
         symbol: 'ETH-USD',
         intent: 'OPEN',
         positionSide: 'SHORT',
-        notional: '500.00',
-        leverage: 1,
+        sizing: { type: 'MARGIN', amount: '250.00' },
+        leverage: 2,
         execution: { type: 'MARKET' },
         takeProfitPrice: '3900.00',
         stopLossPrice: '4100.00',
@@ -513,6 +528,8 @@ describe('V1 HTTP API', () => {
       side: 'SELL',
       positionSide: 'SHORT',
       intent: 'OPEN',
+      leverage: 2,
+      requestedNotional: '500.00',
     });
 
     const positions = await app.inject({
@@ -550,7 +567,7 @@ describe('V1 HTTP API', () => {
         symbol: 'BTC-USD',
         intent: 'OPEN',
         positionSide: 'LONG',
-        notional: '500.00',
+        sizing: { type: 'POSITION_SIZE', amount: '500.00' },
         leverage: 1,
         execution: { type: 'LIMIT', limitPrice: '90000.00' },
       },

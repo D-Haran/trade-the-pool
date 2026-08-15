@@ -11,6 +11,7 @@ import {
   SUPPORTED_SYMBOLS,
   MarketDataUnavailableError,
   type CandleInterval,
+  type CandleHistoryRequest,
   type MarketAvailability,
   type MarketCandle,
   type MarketDataHealth,
@@ -26,11 +27,13 @@ import {
   type MarketView,
   type NormalizedMarketEvent,
   type ProviderHealth,
+  type SubMinuteCandleStore,
   type StartableMarketDataProvider,
 } from './types.js';
 import {
   DEFAULT_SUB_MINUTE_RETENTION,
   SUB_MINUTE_INTERVAL_MS,
+  SUB_MINUTE_RETENTION_MS,
   SubMinuteCandleAggregator,
   type SubMinuteInterval,
 } from './sub-minute-candles.js';
@@ -65,6 +68,8 @@ const EMPTY_STATISTICS: MarketStatistics = {
 };
 
 type CacheEntry = { expiresAt: number; candles: MarketCandle[] };
+
+type LiveMarketDataOptions = { subMinuteStore?: SubMinuteCandleStore };
 
 function age(timestamp: Date | null | undefined, now = Date.now()): number | null {
   return timestamp ? now - timestamp.getTime() : null;
@@ -106,6 +111,8 @@ export class LiveMarketDataService implements MarketDataProvider, StartableMarke
     { status: 'LIVE' | 'STALE' | 'UNAVAILABLE'; publishedAt: number }
   >();
   readonly #subMinute: SubMinuteCandleAggregator;
+  readonly #subMinuteStore?: SubMinuteCandleStore;
+  #persistenceQueue: Promise<void> = Promise.resolve();
   #statusTimer: NodeJS.Timeout | null = null;
   #started = false;
 
@@ -116,9 +123,14 @@ export class LiveMarketDataService implements MarketDataProvider, StartableMarke
       authoritative: UpstreamMarketDataAdapter;
     },
     private readonly freshness: FreshnessConfiguration = DEFAULT_FRESHNESS_CONFIGURATION,
+    options: LiveMarketDataOptions = {},
   ) {
-    this.#subMinute = new SubMinuteCandleAggregator(SUPPORTED_SYMBOLS, (symbol, interval, candle) =>
-      this.publish({ type: 'candle', symbol, interval, candle }),
+    this.#subMinuteStore = options.subMinuteStore;
+    this.#subMinute = new SubMinuteCandleAggregator(
+      SUPPORTED_SYMBOLS,
+      (symbol, interval, candle) => this.publish({ type: 'candle', symbol, interval, candle }),
+      DEFAULT_SUB_MINUTE_RETENTION,
+      (symbol, interval, candle) => this.persistSubMinute(symbol, interval, candle),
     );
     for (const adapter of Object.values(adapters))
       this.#providerHealth.set(adapter.name, adapter.getHealth());
@@ -128,9 +140,15 @@ export class LiveMarketDataService implements MarketDataProvider, StartableMarke
     }
   }
 
-  start(): void {
+  start(): void | Promise<void> {
     if (this.#started) return;
     this.#started = true;
+    if (this.#subMinuteStore)
+      return this.restoreSubMinuteHistory().finally(() => this.startRuntime());
+    this.startRuntime();
+  }
+
+  private startRuntime(): void {
     for (const adapter of Object.values(this.adapters)) {
       this.#unsubscribers.push(adapter.subscribe((event) => this.onUpstreamEvent(event)));
       adapter.start();
@@ -154,6 +172,7 @@ export class LiveMarketDataService implements MarketDataProvider, StartableMarke
     if (this.#statusTimer) clearInterval(this.#statusTimer);
     this.#statusTimer = null;
     while (this.#unsubscribers.length) this.#unsubscribers.pop()?.();
+    await this.#persistenceQueue;
     await Promise.all(Object.values(this.adapters).map((adapter) => adapter.close()));
   }
 
@@ -185,7 +204,32 @@ export class LiveMarketDataService implements MarketDataProvider, StartableMarke
   }
 
   getStatistics(symbol: MarketSymbol): MarketStatistics {
-    return this.#statistics.get(symbol) ?? EMPTY_STATISTICS;
+    const statistics = this.#statistics.get(symbol) ?? EMPTY_STATISTICS;
+    const candles =
+      this.#candles.get(`${symbol}:1m`)?.candles ?? this.#candles.get(`${symbol}:5m`)?.candles;
+    if (!candles?.length) return statistics;
+    const latest = candles.at(-1)!;
+    const changeStart = [...candles]
+      .reverse()
+      .find((candle) => candle.timestamp.getTime() <= latest.timestamp.getTime() - 15 * 60_000);
+    const fiveMinute = candles.filter(
+      (candle) => candle.timestamp.getTime() >= latest.timestamp.getTime() - 5 * 60_000,
+    );
+    const high = fiveMinute.reduce(
+      (value, candle) => (candle.high > value ? candle.high : value),
+      latest.high,
+    );
+    const low = fiveMinute.reduce(
+      (value, candle) => (candle.low < value ? candle.low : value),
+      latest.low,
+    );
+    return {
+      ...statistics,
+      change15mBasisPoints: changeStart
+        ? ((latest.close - changeStart.open) * 10_000n) / changeStart.open
+        : null,
+      range5mBasisPoints: ((high - low) * 10_000n) / latest.close,
+    };
   }
 
   getMarketView(symbol: MarketSymbol): MarketView {
@@ -321,30 +365,44 @@ export class LiveMarketDataService implements MarketDataProvider, StartableMarke
   async getCandles(
     symbol: MarketSymbol,
     interval: CandleInterval,
-    limit: number,
+    request: number | CandleHistoryRequest,
   ): Promise<MarketCandle[]> {
-    if (!Number.isInteger(limit) || limit < 1 || limit > 500)
+    const normalizedRequest = typeof request === 'number' ? { limit: request } : request;
+    const { limit, before } = normalizedRequest;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 1_000)
       throw new Error('Invalid candle request');
-    if (interval in SUB_MINUTE_INTERVAL_MS)
-      return this.#subMinute.getCandles(symbol, interval as SubMinuteInterval, limit);
-    const key = `${symbol}:${interval}:${limit}`;
+    if (before && !Number.isFinite(before.getTime())) throw new Error('Invalid candle cursor');
+    if (interval in SUB_MINUTE_INTERVAL_MS) {
+      const live = this.#subMinute
+        .getCandles(symbol, interval as SubMinuteInterval, limit)
+        .filter((candle) => !before || candle.timestamp < before);
+      if (!this.#subMinuteStore || interval === '1s') return live.slice(-limit);
+      const stored = await this.#subMinuteStore.load(
+        symbol,
+        interval as Exclude<SubMinuteInterval, '1s'>,
+        { limit, ...(before ? { before } : {}) },
+      );
+      return this.reconcileCandles([...stored, ...live]).slice(-limit);
+    }
+    const key = `${symbol}:${interval}`;
     const cached = this.#candles.get(key);
-    if (cached && cached.expiresAt > Date.now()) return this.cloneCandles(cached.candles);
+    if (cached && cached.expiresAt > Date.now())
+      return this.selectCandlePage(cached.candles, normalizedRequest);
     const inflight = this.#inflightCandles.get(key);
-    if (inflight) return this.cloneCandles(await inflight);
+    if (inflight) return this.selectCandlePage(await inflight, normalizedRequest);
     if (!this.adapters.primary.getCandles)
       throw new Error('Primary exchange does not provide candle history');
-    const request = this.adapters.primary
-      .getCandles(symbol, interval, limit)
+    const providerRequest = this.adapters.primary
+      .getCandles(symbol, interval, { limit: 1_000 })
       .then((candles) => {
         const normalized = this.reconcileCandles(candles);
-        const ttl = Math.max(5_000, Math.min(60_000, this.intervalMs(interval) / 2));
+        const ttl = Math.max(15_000, Math.min(15 * 60_000, this.intervalMs(interval) / 2));
         this.#candles.set(key, { expiresAt: Date.now() + ttl, candles: normalized });
         return normalized;
       })
       .finally(() => this.#inflightCandles.delete(key));
-    this.#inflightCandles.set(key, request);
-    return this.cloneCandles(await request);
+    this.#inflightCandles.set(key, providerRequest);
+    return this.selectCandlePage(await providerRequest, normalizedRequest);
   }
 
   getHealth(): MarketDataHealth {
@@ -504,15 +562,14 @@ export class LiveMarketDataService implements MarketDataProvider, StartableMarke
     candle: MarketCandle,
   ): void {
     for (const [key, entry] of this.#candles) {
-      if (!key.startsWith(`${symbol}:${interval}:`)) continue;
+      if (key !== `${symbol}:${interval}`) continue;
       const existing = entry.candles.findIndex(
         (item) => item.timestamp.getTime() === candle.timestamp.getTime(),
       );
       if (existing >= 0) entry.candles[existing] = candle;
       else entry.candles.push(candle);
       entry.candles.sort((left, right) => +left.timestamp - +right.timestamp);
-      const limit = Number(key.split(':').at(-1));
-      if (entry.candles.length > limit) entry.candles.splice(0, entry.candles.length - limit);
+      if (entry.candles.length > 1_000) entry.candles.splice(0, entry.candles.length - 1_000);
     }
   }
 
@@ -533,6 +590,56 @@ export class LiveMarketDataService implements MarketDataProvider, StartableMarke
 
   private cloneCandles(candles: MarketCandle[]): MarketCandle[] {
     return candles.map((candle) => ({ ...candle, timestamp: new Date(candle.timestamp) }));
+  }
+
+  private selectCandlePage(candles: MarketCandle[], request: CandleHistoryRequest): MarketCandle[] {
+    return this.cloneCandles(
+      candles
+        .filter((candle) => !request.before || candle.timestamp < request.before)
+        .slice(-request.limit),
+    );
+  }
+
+  private persistSubMinute(
+    symbol: MarketSymbol,
+    interval: Exclude<SubMinuteInterval, '1s'>,
+    candle: MarketCandle,
+  ): void {
+    if (!this.#subMinuteStore) return;
+    const cutoff = new Date(candle.timestamp.getTime() - SUB_MINUTE_RETENTION_MS[interval]);
+    this.#persistenceQueue = this.#persistenceQueue
+      .then(() =>
+        this.#subMinuteStore!.persist(
+          { symbol, interval, candle, source: `${this.adapters.primary.name}:matched-trades` },
+          cutoff,
+        ),
+      )
+      .catch(() => undefined);
+  }
+
+  private async restoreSubMinuteHistory(): Promise<void> {
+    const store = this.#subMinuteStore;
+    if (!store) return;
+    await Promise.all(
+      SUPPORTED_SYMBOLS.map(async (symbol) => {
+        const [five, fifteen, thirty] = await Promise.all([
+          store.load(symbol, '5s', { limit: 1_000 }),
+          store.load(symbol, '15s', { limit: 1_000 }),
+          store.load(symbol, '30s', { limit: 1_000 }),
+        ]);
+        this.#subMinute.restoreCompleted(symbol, '5s', five);
+        this.#subMinute.restoreCompleted(symbol, '15s', fifteen);
+        this.#subMinute.restoreCompleted(symbol, '30s', thirty);
+        const latest = five.at(-1);
+        if (latest)
+          this.#subMinute.seedFromCompleted(
+            symbol,
+            latest,
+            new Date(),
+            this.freshness.exchangeStaleMs,
+          );
+      }),
+    );
   }
 
   private intervalMs(interval: CandleInterval): number {
@@ -558,6 +665,7 @@ export type MarketDataFactoryConfiguration = {
     maximumDeviationBasisPoints: number;
     futureTimestampToleranceMs: number;
   }>;
+  subMinuteStore?: SubMinuteCandleStore;
 };
 
 export function createLiveMarketDataService(
@@ -588,5 +696,6 @@ export function createLiveMarketDataService(
       }),
     },
     freshness,
+    { subMinuteStore: config.subMinuteStore },
   );
 }

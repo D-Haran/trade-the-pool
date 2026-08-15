@@ -6,6 +6,7 @@ import type {
   OrderHistoryDto,
   PerformanceDto,
   PositionDto,
+  MarketSymbolDto,
 } from '@trade-the-pool/shared';
 import {
   Activity,
@@ -77,11 +78,13 @@ function PositionsTable({
   loading,
   onClose,
   onProtect,
+  activeSymbol,
 }: {
   positions: PositionDto[];
   loading: boolean;
   onClose: (position: PositionDto, percentageBps: number) => void;
   onProtect: (position: PositionDto, takeProfit: string | null, stopLoss: string | null) => void;
+  activeSymbol: MarketSymbolDto;
 }) {
   const [editing, setEditing] = useState<string | null>(null);
   const active = positions.filter((position) => position.quantity !== '0.00000000');
@@ -107,7 +110,12 @@ function PositionsTable({
       </div>
       {active.map((position) => (
         <div className="terminal-table__group" key={position.symbol}>
-          <div className="terminal-table__row">
+          <div
+            className={cn(
+              'terminal-table__row',
+              position.symbol === activeSymbol && 'is-active-market-position',
+            )}
+          >
             <strong className="asset-table-cell">
               <AssetIcon symbol={position.symbol} size={22} />
               {position.symbol.replace('-', '/')}
@@ -116,11 +124,13 @@ function PositionsTable({
               {position.side}
             </span>
             <strong className="tabular">{position.leverage}x</strong>
-            <span className="tabular">{formatQuantity(position.quantity)}</span>
+            <span className="tabular">{formatQuantity(position.quantity, position.symbol)}</span>
             <span className="tabular">{formatUsd(position.notional)}</span>
             <span className="stacked-number tabular">
-              <b>{formatPrice(position.averageEntryPrice)}</b>
-              <small>{position.currentMark ? formatPrice(position.currentMark) : '—'}</small>
+              <b>{formatPrice(position.averageEntryPrice, position.symbol)}</b>
+              <small>
+                {position.currentMark ? formatPrice(position.currentMark, position.symbol) : '—'}
+              </small>
             </span>
             <span className={cn('stacked-number tabular', outcomeClass(position.unrealizedPnL))}>
               <b>{formatUsd(position.unrealizedPnL, { signed: true })}</b>
@@ -128,13 +138,20 @@ function PositionsTable({
             </span>
             <span className="tabular">{formatUsd(position.marginUsed)}</span>
             <span className="tabular">
-              {position.liquidationPrice ? formatPrice(position.liquidationPrice) : '—'}
+              {position.liquidationPrice
+                ? formatPrice(position.liquidationPrice, position.symbol)
+                : '—'}
             </span>
             <button className="protection-cell" onClick={() => setEditing(position.symbol)}>
               <ShieldCheck aria-hidden="true" />
               <span>
-                {position.takeProfitPrice ? formatPrice(position.takeProfitPrice) : '—'} /{' '}
-                {position.stopLossPrice ? formatPrice(position.stopLossPrice) : '—'}
+                {position.takeProfitPrice
+                  ? formatPrice(position.takeProfitPrice, position.symbol)
+                  : '—'}{' '}
+                /{' '}
+                {position.stopLossPrice
+                  ? formatPrice(position.stopLossPrice, position.symbol)
+                  : '—'}
               </span>
             </button>
             <div className="row-actions">
@@ -352,6 +369,7 @@ function PerformancePanel({ performance }: { performance?: PerformanceDto }) {
 }
 
 export function TerminalPanels({
+  activeSymbol,
   positions,
   orders,
   fills,
@@ -363,6 +381,7 @@ export function TerminalPanels({
   onCancel,
   onProtect,
 }: {
+  activeSymbol: MarketSymbolDto;
   positions: PositionDto[];
   orders: OrderHistoryDto[];
   fills: FillHistoryDto[];
@@ -395,6 +414,7 @@ export function TerminalPanels({
       <div className="professional-panel-body">
         {lowerTab === 'POSITIONS' ? (
           <PositionsTable
+            activeSymbol={activeSymbol}
             positions={positions}
             loading={loadingPositions}
             onClose={onClose}

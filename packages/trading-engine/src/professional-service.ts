@@ -52,6 +52,7 @@ import { DomainError } from './errors.js';
 import {
   availableMargin,
   estimatedLiquidationPrice,
+  positionNotionalFromMargin,
   releasedMargin,
   requiredMargin,
   shouldLiquidate,
@@ -66,6 +67,7 @@ export type TradingOrderRequest = {
   intent: 'OPEN' | 'CLOSE';
   orderType: TradingOrderType;
   requestedNotional?: string;
+  requestedMargin?: string;
   leverage?: number;
   quantity?: string;
   percentageBps?: number;
@@ -89,6 +91,7 @@ export type ProfessionalOrderResult = {
     leverage: number;
     status: 'OPEN' | 'FILLED';
     idempotencyKey: string;
+    requestedNotional: string | null;
   };
   fill: null | {
     id: string;
@@ -186,6 +189,7 @@ function serializeResult(
       leverage: order.leverage,
       status: order.status,
       idempotencyKey: order.idempotencyKey,
+      requestedNotional: order.requestedNotional,
     },
     fill: fill
       ? {
@@ -224,10 +228,6 @@ function normalizedRequest(request: TradingOrderRequest, config: ExecutionConfig
   if (request.intent === 'OPEN') {
     if (request.quantity !== undefined || request.percentageBps !== undefined)
       throw new DomainError('INVALID_ORDER', 'Open orders use notional sizing');
-    const notional = parseMoney(request.requestedNotional ?? '');
-    if (notional <= 0n || notional > config.maximumOrderNotional)
-      throw new DomainError('INVALID_ORDER', 'Order notional is outside configured limits');
-    requestedNotional = moneyToString(notional);
     const leverage = request.leverage ?? 1;
     if (
       !Number.isInteger(leverage) ||
@@ -238,8 +238,21 @@ function normalizedRequest(request: TradingOrderRequest, config: ExecutionConfig
         'INVALID_ORDER',
         `${symbol} supports leverage from 1x to ${MARKET_REGISTRY[symbol].maxLeverage}x`,
       );
+    const hasNotional = request.requestedNotional !== undefined;
+    const hasMargin = request.requestedMargin !== undefined;
+    if (hasNotional === hasMargin)
+      throw new DomainError(
+        'INVALID_ORDER',
+        'Open orders require exactly one margin or position-size input',
+      );
+    const notional = hasMargin
+      ? positionNotionalFromMargin(parseMoney(request.requestedMargin!), leverage)
+      : parseMoney(request.requestedNotional!);
+    if (notional <= 0n || notional > config.maximumOrderNotional)
+      throw new DomainError('INVALID_ORDER', 'Order position size is outside configured limits');
+    requestedNotional = moneyToString(notional);
   } else {
-    if (request.requestedNotional !== undefined)
+    if (request.requestedNotional !== undefined || request.requestedMargin !== undefined)
       throw new DomainError('INVALID_ORDER', 'Close orders use quantity or percentage sizing');
     const hasQuantity = request.quantity !== undefined;
     const hasPercentage = request.percentageBps !== undefined;

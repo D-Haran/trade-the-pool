@@ -46,7 +46,7 @@ export function MarketActivityStrip({
               <AssetIcon symbol={market.symbol} size={20} />
               <span>
                 <strong>{market.metadata.baseCurrency}</strong>
-                <small className="tabular">{formatPrice(market.price)}</small>
+                <small className="tabular">{formatPrice(market.price, market.symbol)}</small>
               </span>
               <b
                 className={cn(

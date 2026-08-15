@@ -35,6 +35,17 @@ function percent(value: bigint): string {
 export function scanMarkets(markets: MarketSnapshotDto[]): ScannerSignal[] {
   const available = markets.filter((market) => market.change24hBasisPoints !== null);
   if (!available.length) return [];
+  const shortWindow = markets.filter((market) => market.change15mBasisPoints != null);
+  const shortMover = [...shortWindow].sort((left, right) =>
+    Number(
+      magnitude(right.change15mBasisPoints ?? null) - magnitude(left.change15mBasisPoints ?? null),
+    ),
+  )[0];
+  const shortRange = [...markets]
+    .filter((market) => market.range5mBasisPoints != null)
+    .sort((left, right) =>
+      Number(BigInt(right.range5mBasisPoints!) - BigInt(left.range5mBasisPoints!)),
+    )[0];
   const mover = [...available].sort((left, right) =>
     Number(magnitude(right.change24hBasisPoints) - magnitude(left.change24hBasisPoints)),
   )[0];
@@ -48,14 +59,31 @@ export function scanMarkets(markets: MarketSnapshotDto[]): ScannerSignal[] {
       Number(BigInt(right.change24hBasisPoints!) - BigInt(left.change24hBasisPoints!)),
     )[0];
   const signals: ScannerSignal[] = [];
-  if (mover) {
-    const move = BigInt(mover.change24hBasisPoints!);
+  if (shortMover) {
+    const move = BigInt(shortMover.change15mBasisPoints!);
     signals.push({
-      symbol: mover.symbol,
-      label: 'Largest 24h move',
-      detail: percent(move),
+      symbol: shortMover.symbol,
+      label: move < 0n ? 'Largest 15m drop' : 'Strongest 15m move',
+      detail: `${percent(move)} / 15m`,
       direction: move < 0n ? 'negative' : move > 0n ? 'positive' : 'neutral',
     });
+  }
+  if (shortRange && !signals.some((signal) => signal.symbol === shortRange.symbol))
+    signals.push({
+      symbol: shortRange.symbol,
+      label: 'High short-term volatility',
+      detail: `${percent(BigInt(shortRange.range5mBasisPoints!))} range / 5m`,
+      direction: 'neutral',
+    });
+  if (mover) {
+    const move = BigInt(mover.change24hBasisPoints!);
+    if (!signals.some((signal) => signal.symbol === mover.symbol))
+      signals.push({
+        symbol: mover.symbol,
+        label: 'Largest 24h move',
+        detail: percent(move),
+        direction: move < 0n ? 'negative' : move > 0n ? 'positive' : 'neutral',
+      });
   }
   if (rangeLeader && rangeLeader.market.symbol !== mover?.symbol)
     signals.push({

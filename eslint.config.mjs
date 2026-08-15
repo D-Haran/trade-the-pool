@@ -19,6 +19,7 @@ export default tseslint.config(
     ignores: [
       '**/dist/**',
       '**/.next/**',
+      '**/.next-*/**',
       '**/next-env.d.ts',
       '**/playwright-report/**',
       '**/test-results/**',

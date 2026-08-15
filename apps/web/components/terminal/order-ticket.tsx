@@ -12,10 +12,12 @@ import { useEffect, useMemo, useState } from 'react';
 import { cn } from '@/lib/cn';
 import { formatPrice, formatUsd } from '@/lib/format';
 import { useTerminalStore } from '@/lib/terminal-store';
+import { marginFromPositionSize, positionSizeFromMargin } from '@/lib/order-sizing';
 import { Button } from '../ui/button';
 
 type PositionSide = 'LONG' | 'SHORT';
 type OrderType = 'MARKET' | 'LIMIT' | 'STOP_MARKET';
+type SizingMode = 'MARGIN' | 'POSITION_SIZE';
 const percentages = [2500, 5000, 7500, 10_000] as const;
 
 function validPositive(value: string, places: number): boolean {
@@ -41,7 +43,8 @@ export function OrderTicket({
 }) {
   const [positionSide, setPositionSide] = useState<PositionSide>('LONG');
   const [orderType, setOrderType] = useState<OrderType>('MARKET');
-  const [notional, setNotional] = useState('500.00');
+  const [sizingMode, setSizingMode] = useState<SizingMode>('MARGIN');
+  const [sizeAmount, setSizeAmount] = useState('500.00');
   const [leverage, setLeverage] = useState(1);
   const [orderPrice, setOrderPrice] = useState('');
   const [riskOpen, setRiskOpen] = useState(false);
@@ -54,8 +57,20 @@ export function OrderTicket({
 
   const availableMargin = Number(account.availableMargin);
   const buyingPower = Math.max(0, availableMargin * leverage);
-  const estimatedFee = validPositive(notional, 2) ? Number(notional) * 0.001 : 0;
-  const estimatedMargin = validPositive(notional, 2) ? Number(notional) / leverage : 0;
+  const validSize = validPositive(sizeAmount, 2);
+  const positionSize = validSize
+    ? sizingMode === 'MARGIN'
+      ? positionSizeFromMargin(sizeAmount, leverage)
+      : sizeAmount
+    : '0.00';
+  const marginRequired = validSize
+    ? sizingMode === 'MARGIN'
+      ? sizeAmount
+      : marginFromPositionSize(sizeAmount, leverage)
+    : '0.00';
+  const estimatedFee = Number(positionSize) * 0.001;
+  const estimatedMargin = Number(marginRequired);
+  const availableAfter = Math.max(0, availableMargin - estimatedMargin - estimatedFee);
   const mark = Number(market?.markPrice ?? market?.price ?? '0');
   const estimatedLiquidation =
     mark > 0
@@ -64,15 +79,20 @@ export function OrderTicket({
         : mark * (1 + 0.8 / leverage)
       : null;
   const invalid =
-    !validPositive(notional, 2) ||
+    !validSize ||
     estimatedMargin + estimatedFee > availableMargin ||
     (orderType !== 'MARKET' && !validPositive(orderPrice, 8)) ||
     (takeProfitPrice.length > 0 && !validPositive(takeProfitPrice, 8)) ||
     (stopLossPrice.length > 0 && !validPositive(stopLossPrice, 8));
 
   const presets = useMemo(
-    () => percentages.map((percentage) => ((buyingPower * percentage) / 10_000).toFixed(2)),
-    [buyingPower],
+    () =>
+      percentages.map((percentage) =>
+        (((sizingMode === 'MARGIN' ? availableMargin : buyingPower) * percentage) / 10_000).toFixed(
+          2,
+        ),
+      ),
+    [availableMargin, buyingPower, sizingMode],
   );
 
   useEffect(() => {
@@ -84,7 +104,7 @@ export function OrderTicket({
       if (event.key.toLowerCase() === 's') setPositionSide('SHORT');
       if (event.key === 'Escape') setConfirming(false);
       const preset = Number(event.key) - 1;
-      if (preset >= 0 && preset < presets.length) setNotional(presets[preset]);
+      if (preset >= 0 && preset < presets.length) setSizeAmount(presets[preset]);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
@@ -116,7 +136,7 @@ export function OrderTicket({
       symbol,
       intent: 'OPEN',
       positionSide,
-      notional,
+      sizing: { type: sizingMode, amount: sizeAmount },
       leverage,
       execution,
       ...(takeProfitPrice ? { takeProfitPrice } : {}),
@@ -210,25 +230,40 @@ export function OrderTicket({
         </div>
       </div>
 
+      <div className="sizing-mode-toggle" role="group" aria-label="Order sizing mode">
+        <button
+          className={sizingMode === 'MARGIN' ? 'is-active' : ''}
+          onClick={() => setSizingMode('MARGIN')}
+        >
+          Margin
+        </button>
+        <button
+          className={sizingMode === 'POSITION_SIZE' ? 'is-active' : ''}
+          onClick={() => setSizingMode('POSITION_SIZE')}
+        >
+          Position Size
+        </button>
+      </div>
+
       <label className="terminal-field">
-        <span>SIMULATED NOTIONAL</span>
+        <span>{sizingMode === 'MARGIN' ? 'MARGIN' : 'POSITION SIZE'}</span>
         <div>
           <i>$</i>
           <input
-            value={notional}
+            value={sizeAmount}
             onChange={(event) => {
-              setNotional(event.target.value);
+              setSizeAmount(event.target.value);
               setConfirming(false);
             }}
             inputMode="decimal"
-            aria-label="Simulated order notional in USD"
+            aria-label={sizingMode === 'MARGIN' ? 'Margin amount in USD' : 'Position size in USD'}
           />
           <b>USD</b>
         </div>
       </label>
       <div className="ticket-presets">
         {presets.map((value, index) => (
-          <button key={percentages[index]} onClick={() => setNotional(value)}>
+          <button key={percentages[index]} onClick={() => setSizeAmount(value)}>
             {percentages[index] / 100}% <kbd>{index + 1}</kbd>
           </button>
         ))}
@@ -284,18 +319,45 @@ export function OrderTicket({
         </div>
       ) : null}
 
-      <dl className="order-estimate">
+      <div className="position-size-preview">
+        <span>POSITION SIZE</span>
+        <strong className="tabular">{formatUsd(positionSize)}</strong>
+        <small>
+          {leverage}x leverage · {formatUsd(marginRequired)} margin
+        </small>
+      </div>
+      <dl className="order-estimate order-estimate--primary">
+        <div>
+          <dt>Margin required</dt>
+          <dd className="tabular">{formatUsd(marginRequired)}</dd>
+        </div>
+        <div>
+          <dt>Exposure</dt>
+          <dd className="tabular">{formatUsd(positionSize)}</dd>
+        </div>
+        <div>
+          <dt>Available after trade</dt>
+          <dd className="tabular">~{formatUsd(availableAfter.toFixed(2))}</dd>
+        </div>
+        <div>
+          <dt>Est. liquidation</dt>
+          <dd className="tabular">
+            {estimatedLiquidation && leverage > 1
+              ? `~${formatPrice(estimatedLiquidation.toFixed(8), symbol)}`
+              : '—'}
+          </dd>
+        </div>
+      </dl>
+      <dl className="order-estimate order-estimate--secondary">
         <div>
           <dt>Reference mark</dt>
-          <dd className="tabular">{market?.markPrice ? formatPrice(market.markPrice) : '—'}</dd>
+          <dd className="tabular">
+            {market?.markPrice ? formatPrice(market.markPrice, symbol) : '—'}
+          </dd>
         </div>
         <div>
           <dt>Estimated fee</dt>
           <dd className="tabular">~{formatUsd(estimatedFee.toFixed(2))}</dd>
-        </div>
-        <div>
-          <dt>Initial margin</dt>
-          <dd className="tabular">~{formatUsd(estimatedMargin.toFixed(2))}</dd>
         </div>
         <div>
           <dt>Available margin</dt>
@@ -304,14 +366,6 @@ export function OrderTicket({
         <div>
           <dt>{leverage}x order capacity</dt>
           <dd className="tabular">{formatUsd(buyingPower.toFixed(2))}</dd>
-        </div>
-        <div>
-          <dt>Est. liquidation</dt>
-          <dd className="tabular">
-            {estimatedLiquidation && leverage > 1
-              ? `~${formatPrice(estimatedLiquidation.toFixed(8))}`
-              : '—'}
-          </dd>
         </div>
       </dl>
 

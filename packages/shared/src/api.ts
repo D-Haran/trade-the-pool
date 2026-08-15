@@ -91,7 +91,10 @@ export const professionalOrderRequestSchema = z.discriminatedUnion('intent', [
       ...orderBase,
       intent: z.literal('OPEN'),
       positionSide: positionSideSchema,
-      notional: moneyStringSchema,
+      sizing: z.discriminatedUnion('type', [
+        z.object({ type: z.literal('MARGIN'), amount: moneyStringSchema }).strict(),
+        z.object({ type: z.literal('POSITION_SIZE'), amount: moneyStringSchema }).strict(),
+      ]),
       leverage: z.number().int().min(1).max(5),
       execution: orderExecutionSchema,
       ...optionalProtection,
@@ -496,6 +499,8 @@ export type MarketSnapshotDto = {
   availability: 'ACTIVE' | 'DEGRADED' | 'PAUSED' | 'DISABLED';
   deviationBasisPoints: string | null;
   change24hBasisPoints: string | null;
+  change15mBasisPoints?: string | null;
+  range5mBasisPoints?: string | null;
   high24h: string | null;
   low24h: string | null;
   volume24h: string | null;
@@ -534,6 +539,11 @@ export type MarketCandleDto = {
   low: string;
   close: string;
   volume: string | null;
+};
+
+export type MarketCandlePageDto = ApiEnvelope<MarketCandleDto[]> & {
+  pagination: { nextBefore: string | null; hasMore: boolean };
+  provenance: string | null;
 };
 
 export type MarketOrderBookLevelDto = { price: string; quantity: string; total: string };

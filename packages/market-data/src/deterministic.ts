@@ -8,6 +8,7 @@ import {
   MARKET_METADATA,
   SUPPORTED_SYMBOLS,
   type CandleInterval,
+  type CandleHistoryRequest,
   type ControllableMarketPriceProvider,
   type MarketCandle,
   type MarketDataHealth,
@@ -185,11 +186,15 @@ export class DeterministicMarketPriceSource
       if (tick.price > high) high = tick.price;
       if (tick.price < low) low = tick.price;
     }
+    const short = this.getCandles(symbol, '5m', 4);
+    const latestShort = short.at(-1)!;
     return {
       change24hBasisPoints: ((current.price - first.price) * 10_000n) / first.price,
       high24h: high,
       low24h: low,
       volume24h: null,
+      change15mBasisPoints: ((latestShort.close - short[0].open) * 10_000n) / short[0].open,
+      range5mBasisPoints: ((latestShort.high - latestShort.low) * 10_000n) / latestShort.close,
     };
   }
 
@@ -208,57 +213,51 @@ export class DeterministicMarketPriceSource
     };
   }
 
-  getCandles(symbol: MarketSymbol, interval: CandleInterval, limit: number): MarketCandle[] {
+  getCandles(
+    symbol: MarketSymbol,
+    interval: CandleInterval,
+    request: number | CandleHistoryRequest,
+  ): MarketCandle[] {
+    const normalizedRequest = typeof request === 'number' ? { limit: request } : request;
+    const { limit, before } = normalizedRequest;
     const intervalMs = INTERVAL_MS[interval];
-    if (!intervalMs || !Number.isInteger(limit) || limit < 1 || limit > 500)
+    if (
+      !intervalMs ||
+      !Number.isInteger(limit) ||
+      limit < 1 ||
+      limit > 1_000 ||
+      (before && !Number.isFinite(before.getTime()))
+    )
       throw new Error('Invalid candle request');
-    if (intervalMs < 60_000) {
-      const snapshot = this.getSnapshot(symbol);
-      const end = Math.floor(snapshot.marketTimestamp.getTime() / intervalMs) * intervalMs;
-      let previous = snapshot.price;
-      const result: MarketCandle[] = [];
-      for (let index = limit - 1; index >= 0; index -= 1) {
-        const timestamp = end - index * intervalMs;
-        const offset = BigInt(((Math.floor(timestamp / 1_000) * 17) % 41) - 20);
-        const close =
-          index === 0
-            ? snapshot.price
-            : ((snapshot.price + (snapshot.price * offset) / 100_000n) as Price);
-        const high = previous > close ? previous : close;
-        const low = previous < close ? previous : close;
-        result.push({
-          timestamp: new Date(timestamp),
-          open: previous,
-          high,
-          low,
-          close,
-          volume: (1_000_000n +
-            BigInt(Math.abs(Math.floor(timestamp / 1_000) % 97)) * 10_000n) as Quantity,
-        });
-        previous = close;
-      }
-      return result;
-    }
-    const candles = new Map<number, MarketCandle>();
-    for (const tick of this.#history.get(symbol) ?? []) {
-      const timestamp = Math.floor(tick.marketTimestamp.getTime() / intervalMs) * intervalMs;
-      const candle = candles.get(timestamp);
-      if (!candle) {
-        candles.set(timestamp, {
-          timestamp: new Date(timestamp),
-          open: tick.price,
-          high: tick.price,
-          low: tick.price,
-          close: tick.price,
-          volume: null,
-        });
-      } else {
-        candle.high = tick.price > candle.high ? tick.price : candle.high;
-        candle.low = tick.price < candle.low ? tick.price : candle.low;
-        candle.close = tick.price;
-      }
-    }
-    return [...candles.values()].sort((a, b) => +a.timestamp - +b.timestamp).slice(-limit);
+    const snapshot = this.getSnapshot(symbol);
+    const currentBucket = Math.floor(snapshot.marketTimestamp.getTime() / intervalMs) * intervalMs;
+    const endExclusive = before?.getTime() ?? currentBucket + intervalMs;
+    const lastTimestamp = Math.floor((endExclusive - 1) / intervalMs) * intervalMs;
+    const base = parsePrice(INITIAL_PRICES[symbol]);
+    const priceAt = (timestamp: number): Price => {
+      const sequence = Math.floor(timestamp / Math.max(1_000, intervalMs));
+      const wave = ((sequence * 17 + MARKET_METADATA[symbol].sortOrder) % 121) - 60;
+      const trend = (sequence % 480) - 240;
+      return (base + (base * BigInt(wave * 2 + Math.trunc(trend / 24))) / 100_000n) as Price;
+    };
+    return Array.from({ length: limit }, (_, index) => {
+      const timestamp = lastTimestamp - (limit - index - 1) * intervalMs;
+      const isCurrent = !before && timestamp === currentBucket;
+      const open = priceAt(timestamp - intervalMs);
+      const close = isCurrent ? snapshot.price : priceAt(timestamp);
+      const upper = open > close ? open : close;
+      const lower = open < close ? open : close;
+      const wick = (base * BigInt(Math.abs(Math.floor(timestamp / intervalMs) % 9) + 1)) / 100_000n;
+      return {
+        timestamp: new Date(timestamp),
+        open,
+        high: (upper + wick) as Price,
+        low: (lower > wick ? lower - wick : 1n) as Price,
+        close,
+        volume: (1_000_000n +
+          BigInt(Math.abs(Math.floor(timestamp / 1_000) % 997)) * 10_000n) as Quantity,
+      };
+    });
   }
 
   getOrderBook(symbol: MarketSymbol, depth = 25): MarketOrderBook {

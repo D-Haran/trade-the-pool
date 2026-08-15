@@ -9,7 +9,7 @@ import {
 import { ChevronDown, Radio, Search } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { cn } from '@/lib/cn';
-import { formatPrice } from '@/lib/format';
+import { formatBaseVolume, formatPrice } from '@/lib/format';
 import { marketDataStatusLabel } from '@/lib/market-data-status';
 import { AssetIcon } from './asset-icon';
 
@@ -104,7 +104,9 @@ export function MarketHeader({
                       </small>
                     </span>
                   </span>
-                  <b className="tabular">{market ? formatPrice(market.price) : '—'}</b>
+                  <b className="tabular">
+                    {market ? formatPrice(market.price, market.symbol) : '—'}
+                  </b>
                   <b
                     className={cn(
                       'tabular',
@@ -121,7 +123,9 @@ export function MarketHeader({
       </div>
 
       <div className="active-market-price">
-        <strong className="tabular">{active ? formatPrice(active.price) : '—'}</strong>
+        <strong className="tabular">
+          {active ? formatPrice(active.price, active.symbol) : '—'}
+        </strong>
         <span
           className={cn(
             'tabular',
@@ -135,16 +139,16 @@ export function MarketHeader({
       <dl className="market-stat-strip">
         <div>
           <dt>24H HIGH</dt>
-          <dd className="tabular">{active?.high24h ? formatPrice(active.high24h) : '—'}</dd>
+          <dd className="tabular">{active?.high24h ? formatPrice(active.high24h, symbol) : '—'}</dd>
         </div>
         <div>
           <dt>24H LOW</dt>
-          <dd className="tabular">{active?.low24h ? formatPrice(active.low24h) : '—'}</dd>
+          <dd className="tabular">{active?.low24h ? formatPrice(active.low24h, symbol) : '—'}</dd>
         </div>
         {active?.volume24h ? (
           <div>
-            <dt>24H VOL</dt>
-            <dd className="tabular">{active.volume24h}</dd>
+            <dt>24H BASE VOL</dt>
+            <dd className="tabular">{formatBaseVolume(active.volume24h, symbol)}</dd>
           </div>
         ) : null}
       </dl>

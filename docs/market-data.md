@@ -19,7 +19,8 @@ The canonical registry contains BTC, ETH, SOL, XRP, DOGE, LINK, AVAX, ADA, SUI, 
 LTC against USD. The registry owns display metadata, precision, provider mappings, enablement,
 ordering, and leverage caps. Kraken, Coinbase, and Pyth identifiers are translated only inside the
 provider package. Upstream connections are shared per API process rather than created per browser.
-Raw ticks remain bounded in process memory and are not written to PostgreSQL.
+Raw ticks remain bounded in process memory and are not written to PostgreSQL. Compact completed
+5s/15s/30s OHLCV bars are durable PostgreSQL records; Redis is never their source of truth.
 
 ## Processing flow
 
@@ -72,8 +73,12 @@ removes a level. Every update is sorted/truncated using exact prices and validat
 CRC32 top-ten checksum. A mismatch clears the local book, reports `RECONNECTING`, and forces a new
 subscription/snapshot; knowingly corrupt depth is never served as live.
 
-Minute-and-above (`1m`, `5m`, `15m`, `1h`, `4h`, `1d`) historical candles come from Kraken OHLC REST in live mode. Identical in-flight requests are
-deduplicated and results are cached in process with a timeframe-aware 5–60 second TTL. Realtime
+Minute-and-above (`1m`, `5m`, `15m`, `1h`, `4h`, `1d`) historical candles come from Kraken OHLC
+REST in live mode. The normalized provider range is cached with timeframe-aware 15-second to
+15-minute TTLs and identical concurrent fetches are deduplicated. The API serves the latest or an
+exclusive `before` cursor in chronological order. The client initially asks for 600 bars and
+lazily requests older chunks. Kraken's public OHLC window is currently about 720 recent bars, so
+scroll-back stops honestly when that source window is exhausted. Realtime
 Kraken 1-minute OHLC updates merge by UTC bucket timestamp, replacing an overlapping historical
 candle instead of appending a duplicate. Kraken permits one OHLC interval subscription per symbol;
 larger visible current intervals therefore advance from genuine Kraken ticker events after their
@@ -89,11 +94,18 @@ discarded rather than rewriting already-published history. Once a genuine seed p
 healthy but trade-free second carries the previous close as OHLC with zero volume; it never invents
 movement. Carry-forward stops when the trade feed is stale or disconnected.
 
-The canonical 1s stream is the sole child source for UTC-aligned 5s, 15s, and 30s bars. Bounded
-in-memory buffers retain 2 hours of 1s, 12 hours of 5s, 24 hours of 15s, and 48 hours of 30s bars
-per enabled symbol. A restart refills these buffers from new genuine activity; unavailable past
-seconds are not reconstructed. PostgreSQL does not store raw ticks. Fake/CI mode exposes the same
-intervals with explicit deterministic `SIMULATED` data.
+The canonical 1s stream is the sole child source for UTC-aligned 5s, 15s, and 30s bars. A
+250-millisecond service clock advances/finalizes UTC boundaries without waiting for a future
+trade. Derived open/high/low/close/volume come from the first, extrema, final, and summed 1s child
+values. Kraken's genuine trade-subscription snapshot supplies a small startup bootstrap where
+available; it is not presented as deep history.
+
+Completed 5s/15s/30s bars are upserted by `(symbol, interval, timestamp)`. Central retention keeps
+24 hours of 5s and seven days of 15s/30s bars. The canonical 1s buffer remains process-local for two
+hours. Startup restores recent completed bars and seeds carry-forward across a restart only when
+the last durable close remains inside the exchange-stale window; longer downtime remains an honest
+gap. Persisted, in-memory, and active bars reconcile by timestamp. PostgreSQL never stores raw
+ticks. Fake/CI mode exposes the same intervals with explicit deterministic `SIMULATED` data.
 
 ## Execution and settlement policy
 
@@ -122,7 +134,7 @@ Normalized REST endpoints are:
 
 - `GET /v1/markets`
 - `GET /v1/markets/:symbol`
-- `GET /v1/markets/:symbol/candles?interval=1s|5s|15s|30s|1m|5m|15m|1h|4h|1d&limit=...`
+- `GET /v1/markets/:symbol/candles?interval=1s|5s|15s|30s|1m|5m|15m|1h|4h|1d&limit=...&before=<ISO-8601>`
 - `GET /v1/markets/:symbol/book?depth=...`
 - `GET /v1/markets/:symbol/trades?limit=...`
 

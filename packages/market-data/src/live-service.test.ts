@@ -2,11 +2,18 @@ import { describe, expect, it } from 'vitest';
 import { parsePrice, parseQuantity } from '@trade-the-pool/shared';
 import { createLiveMarketDataService, LiveMarketDataService } from './live-service.js';
 import type { UpstreamEvent, UpstreamMarketDataAdapter } from './providers.js';
-import type { MarketCandle, MarketPriceSnapshot, MarketSymbol, ProviderHealth } from './types.js';
+import type {
+  MarketCandle,
+  MarketPriceSnapshot,
+  MarketSymbol,
+  ProviderHealth,
+  SubMinuteCandleStore,
+} from './types.js';
 
 class Adapter implements UpstreamMarketDataAdapter {
   readonly listeners = new Set<(event: UpstreamEvent) => void>();
   candleRequests = 0;
+  failCandles = false;
   constructor(readonly name: string) {}
   start() {}
   close() {}
@@ -32,6 +39,7 @@ class Adapter implements UpstreamMarketDataAdapter {
   }
   async getCandles() {
     this.candleRequests += 1;
+    if (this.failCandles) throw new Error('provider unavailable');
     const candle = (timestamp: string, close: string): MarketCandle => ({
       timestamp: new Date(timestamp),
       open: parsePrice(close),
@@ -251,6 +259,81 @@ describe('LiveMarketDataService', () => {
       symbol: 'BTC-USD',
       bufferSizes: { '1s': 1, '5s': 1, '15s': 1, '30s': 1 },
     });
+    await service.close();
+  });
+
+  it('loads 600 recent bars, paginates older bars in order, and reuses the cached provider range', async () => {
+    const primary = new Adapter('primary');
+    primary.getCandles = async () => {
+      primary.candleRequests += 1;
+      return Array.from({ length: 720 }, (_, index) => ({
+        timestamp: new Date(Date.UTC(2026, 0, 1, 0, index)),
+        open: parsePrice(String(100 + index)),
+        high: parsePrice(String(100 + index)),
+        low: parsePrice(String(100 + index)),
+        close: parsePrice(String(100 + index)),
+        volume: null,
+      }));
+    };
+    const service = new LiveMarketDataService({
+      primary,
+      comparison: new Adapter('comparison'),
+      authoritative: new Adapter('authority'),
+    });
+    const latest = await service.getCandles('BTC-USD', '1m', { limit: 600 });
+    const older = await service.getCandles('BTC-USD', '1m', {
+      limit: 600,
+      before: latest[0].timestamp,
+    });
+    expect(latest).toHaveLength(600);
+    expect(older).toHaveLength(120);
+    expect(older.at(-1)!.timestamp < latest[0].timestamp).toBe(true);
+    expect(primary.candleRequests).toBe(1);
+  });
+
+  it('does not cache failed history requests and allows a clean retry', async () => {
+    const primary = new Adapter('primary');
+    primary.failCandles = true;
+    const service = new LiveMarketDataService({
+      primary,
+      comparison: new Adapter('comparison'),
+      authoritative: new Adapter('authority'),
+    });
+    await expect(service.getCandles('BTC-USD', '5m', { limit: 600 })).rejects.toThrow(
+      'provider unavailable',
+    );
+    primary.failCandles = false;
+    await expect(service.getCandles('BTC-USD', '5m', { limit: 600 })).resolves.toHaveLength(1);
+    expect(primary.candleRequests).toBe(2);
+  });
+
+  it('reconciles durable sub-minute history with in-memory bars after restart', async () => {
+    const storedCandle: MarketCandle = {
+      timestamp: new Date('2026-01-01T00:00:00Z'),
+      open: parsePrice('100'),
+      high: parsePrice('101'),
+      low: parsePrice('99'),
+      close: parsePrice('100'),
+      volume: parseQuantity('2'),
+    };
+    const store: SubMinuteCandleStore = {
+      async load(symbol, interval, request) {
+        return symbol === 'BTC-USD' && interval === '5s' && !request.before ? [storedCandle] : [];
+      },
+      async persist() {},
+    };
+    const service = new LiveMarketDataService(
+      {
+        primary: new Adapter('primary'),
+        comparison: new Adapter('comparison'),
+        authoritative: new Adapter('authority'),
+      },
+      undefined,
+      { subMinuteStore: store },
+    );
+    await service.start();
+    const restored = await service.getCandles('BTC-USD', '5s', { limit: 600 });
+    expect(restored).toEqual([storedCandle]);
     await service.close();
   });
 });

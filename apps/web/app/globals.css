@@ -1766,6 +1766,23 @@ a {
   inset: 0;
   background: rgb(12 15 19 / 0.85);
 }
+.chart-history-status,
+.chart-stale-status {
+  position: absolute;
+  z-index: 4;
+  top: 0.55rem;
+  right: 0.7rem;
+  padding: 0.28rem 0.42rem;
+  color: var(--text-muted);
+  background: rgb(10 13 16 / 0.88);
+  border: 1px solid var(--terminal-line);
+  border-radius: 3px;
+  font: 600 0.48rem var(--font-mono);
+  pointer-events: none;
+}
+.chart-stale-status {
+  color: var(--warning);
+}
 .account-rail {
   padding: 0.85rem;
 }
@@ -3327,6 +3344,32 @@ a {
 .timeframe-tabs button.is-active {
   color: var(--accent);
 }
+.timeframe-more {
+  position: relative;
+  display: inline-flex;
+}
+.timeframe-more svg {
+  width: 13px;
+}
+.timeframe-more__menu {
+  position: absolute;
+  z-index: 20;
+  top: 31px;
+  left: 0;
+  min-width: 118px;
+  padding: 0.25rem;
+  background: #11161b;
+  border: 1px solid var(--border-default);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.4);
+}
+.timeframe-more__menu button {
+  width: 100%;
+  justify-content: space-between;
+}
+.timeframe-more__menu small {
+  color: var(--text-muted);
+  font-size: 0.42rem;
+}
 .chart-toolbar__actions svg {
   width: 13px;
 }
@@ -3639,6 +3682,27 @@ kbd {
   gap: 0.38rem;
   margin-top: 0.7rem;
 }
+.sizing-mode-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  margin-top: 0.7rem;
+  padding: 2px;
+  background: #090c0f;
+  border: 1px solid var(--border-subtle);
+}
+.sizing-mode-toggle button {
+  min-height: 28px;
+  color: var(--text-muted);
+  background: transparent;
+  border: 0;
+  font-size: 0.52rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.sizing-mode-toggle button.is-active {
+  color: var(--text-primary);
+  background: #171d22;
+}
 .terminal-field > span {
   color: var(--text-muted);
   font-size: 0.5rem;
@@ -3732,6 +3796,37 @@ kbd {
   padding: 0.55rem 0;
   border-block: 1px solid var(--terminal-line);
 }
+.position-size-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 0.18rem;
+  margin-top: 0.75rem;
+  padding: 0.68rem;
+  background: #0a0e11;
+  border: 1px solid var(--border-default);
+}
+.position-size-preview > span {
+  color: var(--text-muted);
+  font-size: 0.48rem;
+  font-weight: 750;
+  letter-spacing: 0.09em;
+}
+.position-size-preview strong {
+  color: var(--text-primary);
+  font-size: 1.05rem;
+}
+.position-size-preview small {
+  color: var(--text-secondary);
+  font-size: 0.52rem;
+}
+.order-estimate--primary dd {
+  color: var(--text-primary);
+  font-size: 0.62rem;
+}
+.order-estimate--secondary {
+  margin-top: 0;
+  border-top: 0;
+}
 .order-estimate > div {
   display: flex;
   align-items: center;
@@ -3784,8 +3879,8 @@ kbd {
   width: 12px;
 }
 .terminal-account-strip {
-  grid-template-columns: repeat(7, 1fr);
-  min-height: 54px;
+  grid-template-columns: 1.35fr repeat(8, 1fr);
+  min-height: 66px;
   align-items: center;
   background: #0d1115;
   border-bottom: 1px solid var(--terminal-line);
@@ -3795,6 +3890,28 @@ kbd {
 }
 .terminal-account-strip dd {
   font-size: 0.72rem;
+}
+.terminal-account-strip .account-metric--hero dd,
+.terminal-account-strip .account-metric--position dd {
+  display: flex;
+  align-items: baseline;
+  gap: 0.42rem;
+  overflow: visible;
+}
+.terminal-account-strip .account-metric--hero strong {
+  font-size: 1.02rem;
+}
+.terminal-account-strip .account-metric--hero span,
+.terminal-account-strip .account-metric--position span {
+  font-size: 0.54rem;
+}
+.terminal-account-strip .account-metric--primary dd {
+  color: var(--text-primary);
+  font-size: 0.8rem;
+}
+.terminal-account-strip .account-metric--tertiary dd {
+  color: var(--text-muted);
+  font-size: 0.61rem;
 }
 .professional-terminal-lower {
   min-height: 285px;
@@ -3861,6 +3978,10 @@ kbd {
   align-items: center;
   gap: 0.65rem;
   padding: 0 0.8rem;
+}
+.terminal-table__row.is-active-market-position {
+  background: rgb(216 255 79 / 0.035);
+  box-shadow: inset 2px 0 0 rgb(216 255 79 / 0.55);
 }
 .terminal-table__head {
   min-height: 31px;
@@ -4126,8 +4247,10 @@ kbd {
   .direction-tabs,
   .order-type-tabs,
   .leverage-control,
+  .sizing-mode-toggle,
   .risk-toggle,
   .risk-fields,
+  .position-size-preview,
   .order-estimate,
   .ticket-blocked,
   .professional-submit,
@@ -4137,9 +4260,6 @@ kbd {
   }
   .terminal-account-strip {
     grid-template-columns: repeat(3, 1fr);
-  }
-  .terminal-account-strip > div:nth-child(4) {
-    border-left: 0;
   }
   .performance-grid {
     grid-template-columns: repeat(3, 1fr);

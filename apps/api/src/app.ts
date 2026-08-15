@@ -728,7 +728,9 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
               orderType: body.execution.type,
               ...(body.intent === 'OPEN'
                 ? {
-                    requestedNotional: body.notional,
+                    ...(body.sizing.type === 'MARGIN'
+                      ? { requestedMargin: body.sizing.amount }
+                      : { requestedNotional: body.sizing.amount }),
                     leverage: body.leverage,
                     takeProfitPrice: body.takeProfitPrice,
                     stopLossPrice: body.stopLossPrice,
@@ -798,7 +800,7 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
           requestedNotional:
             'intent' in body
               ? body.intent === 'OPEN'
-                ? body.notional
+                ? result.order.requestedNotional
                 : null
               : body.side === 'BUY'
                 ? body.notional
@@ -893,7 +895,12 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
   const candleQuerySchema = z
     .object({
       interval: candleIntervalSchema.default('1m'),
-      limit: z.coerce.number().int().min(1).max(500).default(240),
+      limit: z.coerce.number().int().min(1).max(1_000).default(600),
+      before: z
+        .string()
+        .datetime({ offset: true })
+        .transform((value) => new Date(value))
+        .optional(),
     })
     .strict();
   const serializeMarket = async (symbol: z.infer<typeof marketSymbolSchema>) => {
@@ -925,6 +932,8 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
       availability: view?.availability ?? 'ACTIVE',
       deviationBasisPoints: view?.deviationBasisPoints?.toString() ?? null,
       change24hBasisPoints: statistics?.change24hBasisPoints?.toString() ?? null,
+      change15mBasisPoints: statistics?.change15mBasisPoints?.toString() ?? null,
+      range5mBasisPoints: statistics?.range5mBasisPoints?.toString() ?? null,
       high24h: statistics?.high24h ? priceToString(statistics.high24h) : null,
       low24h: statistics?.low24h ? priceToString(statistics.low24h) : null,
       volume24h: statistics?.volume24h ? quantityToString(statistics.volume24h) : null,
@@ -994,12 +1003,16 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
     },
     async (request) => {
       const { symbol } = parse(marketParameterSchema, request.params);
-      const { interval, limit } = parse(candleQuerySchema, request.query);
+      const { interval, limit, before } = parse(candleQuerySchema, request.query);
       const market = dependencies.market as Partial<MarketHistoryProvider>;
       if (typeof market.getCandles !== 'function')
         throw new ApiError(404, 'NOT_FOUND', 'Market candle history is unavailable.');
+      const candles = await market.getCandles(symbol, interval, {
+        limit,
+        ...(before ? { before } : {}),
+      });
       return {
-        data: (await market.getCandles(symbol, interval, limit)).map((candle) => ({
+        data: candles.map((candle) => ({
           timestamp: candle.timestamp,
           open: priceToString(candle.open),
           high: priceToString(candle.high),
@@ -1007,6 +1020,10 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
           close: priceToString(candle.close),
           volume: candle.volume === null ? null : quantityToString(candle.volume),
         })),
+        pagination: {
+          hasMore: candles.length === limit,
+          nextBefore: candles[0]?.timestamp.toISOString() ?? null,
+        },
         provenance: (() => {
           const components = (market as Partial<MarketDataProvider>).getHealth?.().components;
           return interval.endsWith('s')
@@ -1113,6 +1130,10 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
         if (typeof market.advancePrice !== 'function')
           throw new ApiError(404, 'NOT_FOUND', 'Development market controls are unavailable.');
         const snapshot = market.advancePrice(body.symbol, body.price, new Date());
+        // The observable market listener projects risk asynchronously. Development controls are
+        // used by deterministic browser tests, so do not acknowledge a price step until the
+        // authoritative order/liquidation pass for that step has completed.
+        await trading.processMarketTick(body.symbol);
         return {
           data: {
             symbol: snapshot.symbol,

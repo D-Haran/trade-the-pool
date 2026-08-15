@@ -21,6 +21,7 @@ import {
   CANDLE_INTERVALS,
   candleIntervalSchema,
   realtimeSubscriptionSchema,
+  professionalOrderRequestSchema,
 } from './index.js';
 
 describe('money', () => {
@@ -203,5 +204,35 @@ describe('canonical candle intervals', () => {
         }).topic,
       ).toBe(`market:BTC-USD:candles:${interval}`);
     }
+  });
+});
+
+describe('professional order sizing', () => {
+  it.each(['MARGIN', 'POSITION_SIZE'] as const)('accepts explicit %s sizing', (type) => {
+    expect(
+      professionalOrderRequestSchema.parse({
+        entryId: '00000000-0000-4000-8000-000000000001',
+        symbol: 'BTC-USD',
+        intent: 'OPEN',
+        positionSide: 'LONG',
+        sizing: { type, amount: '1000.00' },
+        leverage: 5,
+        execution: { type: 'MARKET' },
+      }),
+    ).toMatchObject({ sizing: { type, amount: '1000.00' } });
+  });
+
+  it('rejects the former ambiguous notional-only professional request', () => {
+    expect(() =>
+      professionalOrderRequestSchema.parse({
+        entryId: '00000000-0000-4000-8000-000000000001',
+        symbol: 'BTC-USD',
+        intent: 'OPEN',
+        positionSide: 'LONG',
+        notional: '1000.00',
+        leverage: 5,
+        execution: { type: 'MARKET' },
+      }),
+    ).toThrow();
   });
 });

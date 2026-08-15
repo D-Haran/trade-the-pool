@@ -74,26 +74,37 @@ positions, P&L, history, and authorization boundary.
 Order submissions use a stable idempotency key for the lifetime of one user intent. Network or
 ambiguous failures retain that key so a retry cannot duplicate a fill. A successful fill or a
 materially edited order creates the next intent. The ticket supports explicit LONG/SHORT paper
-positions, asset-capped 1x–5x simulated leverage, market/limit/stop execution, notional presets,
-margin and liquidation estimates, and optional take-profit/stop-loss prices. Position rows expose
+positions, asset-capped 1x–5x simulated leverage, market/limit/stop execution, explicit
+`Margin | Position Size` sizing (defaulting to margin), prominent exposure/margin previews,
+liquidation estimates, and optional take-profit/stop-loss prices. Position rows expose
 leverage, notional, margin, liquidation price, 25%/50%/full server-validated closes, and editable
 protection. All monetary and quantity fields remain decimal strings in the browser and are never
 used for accounting calculations.
 
 ## Market chart
 
-The chart initializes from normalized server OHLC, then merges incremental realtime candles by
-symbol, timeframe, and UTC bucket. It supports candlestick/line display; 1m, 5m, 15m, 1h, 4h, and
-1d intervals; SMA, EMA, VWAP, Bollinger Bands, RSI, MACD, and volume; reset; and fullscreen. VWAP
+The chart initializes with up to 600 normalized server OHLC bars, then merges incremental realtime
+candles by symbol, timeframe, and UTC bucket. Near the oldest visible bar it requests an exclusive
+`before` page, prepends deduplicated chronological bars, and shifts the logical range by the exact
+prepend count so zoom and viewport remain stable. Loading and end-of-history feedback use small
+chart badges. The primary toolbar is 5s, 15s, 30s, 1m, 5m, 15m, 1h, 4h, and 1d; supported 1s is
+under the compact overflow menu. It supports candlestick/line display; SMA, EMA, VWAP, Bollinger
+Bands, RSI, MACD, and volume; reset; and fullscreen. VWAP
 and volume are unavailable when the provider has no genuine volume. Query cancellation, scoped
 subscriptions, and symbol checks prevent a slow prior-market request/event from overwriting a new
 selection. Backend freshness/deviation state pauses submission; the browser does not invent a
 local execution authority.
 
 Desktop places a compact Kraken-labelled market-depth/recent-trades panel between the chart and
-order ticket. Depth rows show exact price, size, cumulative size, spread, and restrained shading.
+order ticket. Depth rows show market-precision price, compact display-only size/cumulative size,
+spread, and restrained shading.
 Book updates are batched with `requestAnimationFrame`; trades use a bounded list. Both bootstrap
 from REST and use the selected market's existing WebSocket topic thereafter.
+
+The account hierarchy keeps total tournament P&L, equity, selected-position P&L, rank/payout state,
+and mathematically defined account exposure above quieter supporting accounting detail. Exact
+decimal API/domain values are unchanged; centralized formatters apply asset-specific display
+precision and compact base-volume units only at render time.
 
 The terminal keeps a persistent `PAPER` identity and selected market preferences in Zustand. A
 single bulk market query powers the scrollable 12-asset watchlist and objective Market Pulse

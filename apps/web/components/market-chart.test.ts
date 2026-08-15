@@ -6,6 +6,7 @@ import {
   formatChartTimestamp,
   macd,
   relativeStrengthIndex,
+  preservedRangeAfterPrepend,
   simpleMovingAverage,
   volumeWeightedAveragePrice,
 } from '../lib/chart-analysis';
@@ -32,5 +33,16 @@ describe('sub-minute chart behavior', () => {
     expect(bollingerBands(candles, 20).upper).toHaveLength(21);
     expect(relativeStrengthIndex(candles, 14)).toHaveLength(26);
     expect(macd(candles).histogram).toHaveLength(40);
+  });
+
+  it('preserves the viewed candles when older bars are prepended', () => {
+    expect(preservedRangeAfterPrepend({ from: 12.5, to: 82.5 }, 600, 720)).toEqual({
+      from: 132.5,
+      to: 202.5,
+    });
+    expect(preservedRangeAfterPrepend({ from: 0, to: 60 }, 720, 720)).toEqual({
+      from: 0,
+      to: 60,
+    });
   });
 });
