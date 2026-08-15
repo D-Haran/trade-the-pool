@@ -21,6 +21,15 @@ const INITIAL_PRICES: Record<MarketSymbol, string> = {
   'BTC-USD': '100000.00',
   'ETH-USD': '4000.00',
   'SOL-USD': '200.00',
+  'XRP-USD': '2.40',
+  'DOGE-USD': '0.22',
+  'LINK-USD': '18.00',
+  'AVAX-USD': '35.00',
+  'ADA-USD': '0.78',
+  'SUI-USD': '3.20',
+  'AAVE-USD': '280.00',
+  'NEAR-USD': '5.40',
+  'LTC-USD': '115.00',
 };
 
 export const INTERVAL_MS: Record<CandleInterval, number> = {

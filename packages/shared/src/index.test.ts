@@ -15,6 +15,9 @@ import {
   subtractMoney,
   weightedAveragePrice,
   parseEnvironment,
+  MARKET_REGISTRY,
+  SUPPORTED_MARKET_SYMBOLS,
+  allowedLeverages,
 } from './index.js';
 
 describe('money', () => {
@@ -73,6 +76,15 @@ describe('environment security', () => {
     PYTH_FEED_ID_BTC_USD: 'aa'.repeat(32),
     PYTH_FEED_ID_ETH_USD: 'bb'.repeat(32),
     PYTH_FEED_ID_SOL_USD: 'cc'.repeat(32),
+    PYTH_FEED_ID_XRP_USD: 'dd'.repeat(32),
+    PYTH_FEED_ID_DOGE_USD: 'ee'.repeat(32),
+    PYTH_FEED_ID_LINK_USD: 'ff'.repeat(32),
+    PYTH_FEED_ID_AVAX_USD: '11'.repeat(32),
+    PYTH_FEED_ID_ADA_USD: '22'.repeat(32),
+    PYTH_FEED_ID_SUI_USD: '33'.repeat(32),
+    PYTH_FEED_ID_AAVE_USD: '44'.repeat(32),
+    PYTH_FEED_ID_NEAR_USD: '55'.repeat(32),
+    PYTH_FEED_ID_LTC_USD: '66'.repeat(32),
   };
 
   it('rejects development authentication in production', () => {
@@ -152,5 +164,15 @@ describe('environment security', () => {
     expect(() =>
       parseEnvironment({ ...required, NODE_ENV: 'production', MARKET_DATA_MODE: 'fake' }),
     ).toThrow('Production requires MARKET_DATA_MODE=live');
+  });
+});
+
+describe('canonical market registry', () => {
+  it('keeps a curated, ordered universe with bounded asset-specific leverage', () => {
+    expect(SUPPORTED_MARKET_SYMBOLS).toHaveLength(12);
+    expect(MARKET_REGISTRY['BTC-USD'].maxLeverage).toBe(5);
+    expect(MARKET_REGISTRY['SUI-USD'].maxLeverage).toBe(2);
+    expect(allowedLeverages('SOL-USD')).toEqual([1, 2, 3, 4]);
+    expect(SUPPORTED_MARKET_SYMBOLS).not.toContain('PEPE-USD');
   });
 });

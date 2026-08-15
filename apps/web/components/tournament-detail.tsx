@@ -157,6 +157,13 @@ export function TournamentDetail({ slug }: { slug: string }) {
 
       <div className="detail-grid content-width">
         <div className="detail-main">
+          {entries.isError ? (
+            <ErrorState
+              title="Your entries are unavailable"
+              detail="The trading accounts could not be valued with authoritative market data."
+              retry={() => entries.refetch()}
+            />
+          ) : null}
           {confirmation ? (
             <section className="entry-confirmation" role="status">
               <CheckCircle2 aria-hidden="true" />
@@ -346,7 +353,11 @@ export function TournamentDetail({ slug }: { slug: string }) {
           <div className="entry-panel__row">
             <span>Your entries</span>
             <b className="tabular">
-              {session.data ? `${owned.length} / ${item.maxEntriesPerUser}` : '—'}
+              {session.data
+                ? entries.isError
+                  ? 'Unavailable'
+                  : `${owned.length} / ${item.maxEntriesPerUser}`
+                : '—'}
             </b>
           </div>
           <div className="entry-panel__deadline">

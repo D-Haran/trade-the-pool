@@ -1,6 +1,6 @@
 'use client';
 
-import type { MarketSymbolDto } from '@trade-the-pool/shared';
+import { SUPPORTED_MARKET_SYMBOLS, type MarketSymbolDto } from '@trade-the-pool/shared';
 import { useState } from 'react';
 import { useMutation, useQueries, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api-client';
@@ -9,15 +9,25 @@ import { queryKeys } from '@/lib/query-keys';
 import { AuthGuard } from './auth-guard';
 import { Button } from './ui/button';
 
-const symbols: MarketSymbolDto[] = ['BTC-USD', 'ETH-USD', 'SOL-USD'];
+const symbols: MarketSymbolDto[] = [...SUPPORTED_MARKET_SYMBOLS];
+const initialPrices: Record<MarketSymbolDto, string> = {
+  'BTC-USD': '100000.00',
+  'ETH-USD': '4000.00',
+  'SOL-USD': '200.00',
+  'XRP-USD': '2.40',
+  'DOGE-USD': '0.22',
+  'LINK-USD': '18.00',
+  'AVAX-USD': '35.00',
+  'ADA-USD': '0.78',
+  'SUI-USD': '3.20',
+  'AAVE-USD': '280.00',
+  'NEAR-USD': '5.40',
+  'LTC-USD': '115.00',
+};
 
 function Controls() {
   const queryClient = useQueryClient();
-  const [values, setValues] = useState<Record<MarketSymbolDto, string>>({
-    'BTC-USD': '100000.00',
-    'ETH-USD': '4000.00',
-    'SOL-USD': '200.00',
-  });
+  const [values, setValues] = useState<Record<MarketSymbolDto, string>>(initialPrices);
   const marketQueries = useQueries({
     queries: symbols.map((symbol) => ({
       queryKey: queryKeys.market(symbol),

@@ -4,13 +4,13 @@ import { createClient } from 'redis';
 import { databaseUrl } from './database';
 import { E2E } from './fixtures';
 
-const apiUrl = `http://127.0.0.1:${process.env.E2E_API_PORT ?? '4000'}`;
+const apiUrl = `http://127.0.0.1:${process.env.E2E_API_PORT ?? '4100'}`;
 let context: BrowserContext;
 let page: Page;
 let firstEntryId = '';
 let secondEntryId = '';
 
-async function selectMarket(label: 'BTC/USD' | 'ETH/USD' | 'SOL/USD') {
+async function selectMarket(label: string) {
   await page.locator('.market-selector-trigger').click();
   await page.locator('.market-picker button').filter({ hasText: label }).click();
   await expect(page.locator('.market-selector-trigger')).toContainText(label);
@@ -88,10 +88,21 @@ test.describe.serial('authoritative trading journey', () => {
   });
 
   test('trades long and short, manages risk, and exercises chart and pending-order controls', async () => {
+    await expect(page.locator('.market-activity-strip')).toContainText('WATCHLIST');
+    await expect(page.locator('.market-activity-strip')).toContainText('MARKET PULSE');
+    await expect(page.locator('.market-watchlist-scroll button')).toHaveCount(12);
+    await page.locator('.market-selector-trigger').click();
+    await expect(page.locator('.market-picker > button')).toHaveCount(12);
+    await page.getByPlaceholder('Search markets').fill('Sui');
+    await page.locator('.market-picker button').filter({ hasText: 'SUI/USD' }).click();
+    await expect(page.locator('.market-selector-trigger')).toContainText('SUI/USD');
+    await expect(page.getByRole('group', { name: 'Leverage' }).getByRole('button')).toHaveCount(2);
+
     await page.request.post(`${apiUrl}/v1/dev/market/advance`, {
       data: { symbol: 'ETH-USD', price: '4000.00' },
     });
     await selectMarket('ETH/USD');
+    await page.getByRole('group', { name: 'Leverage' }).getByRole('button', { name: '3x' }).click();
     await page.getByLabel('Simulated order notional in USD').fill('1000.00');
     await page.getByRole('button', { name: /Take Profit \/ Stop Loss/ }).click();
     await page.getByLabel('TAKE PROFIT').fill('4200.00');
@@ -101,6 +112,8 @@ test.describe.serial('authoritative trading journey', () => {
     await expect(page.getByText('LONG ETH FILLED')).toBeVisible();
     await expect(page.locator('.terminal-table--positions')).toContainText('ETH/USD');
     await expect(page.locator('.terminal-table--positions')).toContainText('LONG');
+    await expect(page.locator('.terminal-table--positions')).toContainText('3x');
+    await expect(page.locator('.terminal-table--positions')).toContainText('Liq. Estimate');
 
     await page.request.post(`${apiUrl}/v1/dev/market/advance`, {
       data: { symbol: 'ETH-USD', price: '4100.00' },
@@ -195,6 +208,21 @@ test.describe.serial('authoritative trading journey', () => {
       .selectOption(firstEntryId);
     await expect(page.locator('.terminal-account-strip')).toContainText('$10,000.00');
     await expect(page.locator('.tournament-metrics')).toContainText('$55.00');
+    await expect(page.locator('.tournament-metrics')).toContainText('PROJECTED PRIZE');
+    await expect(page.locator('.tournament-metrics')).toContainText('PODIUM GAP');
+    await expect(page.locator('.tournament-metrics')).toContainText('CASH LINE');
+    await page.request.post(`${apiUrl}/v1/dev/market/advance`, {
+      data: { symbol: 'SOL-USD', price: '240.00' },
+    });
+    await expect(page.locator('.rank-feedback.is-changing')).toContainText('#2', {
+      timeout: 10_000,
+    });
+    await page.request.post(`${apiUrl}/v1/dev/market/advance`, {
+      data: { symbol: 'SOL-USD', price: '200.00' },
+    });
+    await expect(page.locator('.rank-feedback.is-changing')).toContainText('#1', {
+      timeout: 10_000,
+    });
   });
 
   test('keeps PostgreSQL account state across logout, login, and navigation', async () => {

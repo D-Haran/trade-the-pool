@@ -181,6 +181,7 @@ export const api = {
     ),
   market: (symbol: MarketSymbolDto) =>
     request<ApiEnvelope<MarketSnapshotDto>>(`/v1/markets/${symbol}`),
+  markets: () => request<ApiEnvelope<MarketSnapshotDto[]>>('/v1/markets'),
   candles: (
     symbol: MarketSymbolDto,
     interval: CandleIntervalDto,

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 export * from './api.js';
+export * from './markets.js';
 
 export type Money = bigint & { readonly __brand: 'MoneyInCents' };
 export type Price = bigint & { readonly __brand: 'PriceAtEightDecimals' };
@@ -180,6 +181,15 @@ export const environmentSchema = z
     PYTH_FEED_ID_BTC_USD: optionalFeedId,
     PYTH_FEED_ID_ETH_USD: optionalFeedId,
     PYTH_FEED_ID_SOL_USD: optionalFeedId,
+    PYTH_FEED_ID_XRP_USD: optionalFeedId,
+    PYTH_FEED_ID_DOGE_USD: optionalFeedId,
+    PYTH_FEED_ID_LINK_USD: optionalFeedId,
+    PYTH_FEED_ID_AVAX_USD: optionalFeedId,
+    PYTH_FEED_ID_ADA_USD: optionalFeedId,
+    PYTH_FEED_ID_SUI_USD: optionalFeedId,
+    PYTH_FEED_ID_AAVE_USD: optionalFeedId,
+    PYTH_FEED_ID_NEAR_USD: optionalFeedId,
+    PYTH_FEED_ID_LTC_USD: optionalFeedId,
     MARKET_AUTHORITATIVE_DELAYED_MS: z.coerce.number().int().min(1_000).default(5_000),
     MARKET_AUTHORITATIVE_STALE_MS: z.coerce.number().int().min(2_000).default(20_000),
     MARKET_EXCHANGE_DELAYED_MS: z.coerce.number().int().min(1_000).default(5_000),
@@ -249,6 +259,15 @@ export const environmentSchema = z
         'PYTH_FEED_ID_BTC_USD',
         'PYTH_FEED_ID_ETH_USD',
         'PYTH_FEED_ID_SOL_USD',
+        'PYTH_FEED_ID_XRP_USD',
+        'PYTH_FEED_ID_DOGE_USD',
+        'PYTH_FEED_ID_LINK_USD',
+        'PYTH_FEED_ID_AVAX_USD',
+        'PYTH_FEED_ID_ADA_USD',
+        'PYTH_FEED_ID_SUI_USD',
+        'PYTH_FEED_ID_AAVE_USD',
+        'PYTH_FEED_ID_NEAR_USD',
+        'PYTH_FEED_ID_LTC_USD',
       ] as const)
         if (!environment[key])
           context.addIssue({

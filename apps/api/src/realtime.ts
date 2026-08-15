@@ -6,10 +6,11 @@ import {
   type RealtimeEvent,
 } from '@trade-the-pool/shared';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import type {
-  MarketDataProvider,
-  MarketPriceProvider,
-  ObservableMarketPriceProvider,
+import {
+  SUPPORTED_SYMBOLS,
+  type MarketDataProvider,
+  type MarketPriceProvider,
+  type ObservableMarketPriceProvider,
 } from '@trade-the-pool/market-data';
 import { requireUser, type AuthenticationService } from './auth.js';
 import type { AuthorizationService } from './authorization.js';
@@ -231,7 +232,7 @@ async function handleMessage(
     }
     if (
       topic.startsWith('market:') &&
-      !['market:BTC-USD', 'market:ETH-USD', 'market:SOL-USD'].includes(topic)
+      !SUPPORTED_SYMBOLS.some((symbol) => topic === `market:${symbol}`)
     )
       throw new Error('Unsupported market topic');
     if (action === 'subscribe') dependencies.hub.subscribe(socket, topic);

@@ -47,6 +47,7 @@ import {
   type ExactPosition,
 } from './domain.js';
 import { DomainError } from './errors.js';
+import { estimatedLiquidationPrice, maximumBuyingPower } from './risk.js';
 
 export type BuyMarketOrder = {
   entryId: string;
@@ -96,17 +97,24 @@ export type AccountSummary = {
   entryId: string;
   cash: string;
   availableBuyingPower: string;
+  availableMargin: string;
+  marginUsed: string;
   positionValue: string;
+  grossExposure: string;
   realizedPnL: string;
   unrealizedPnL: string;
   equity: string;
   positions: Array<{
     symbol: MarketSymbol;
     side: 'LONG' | 'SHORT';
+    leverage: number;
     quantity: string;
     averageEntryPrice: string;
     currentMark: string | null;
     marketValue: string;
+    notional: string;
+    marginUsed: string;
+    liquidationPrice: string | null;
     realizedPnL: string;
     unrealizedPnL: string;
   }>;
@@ -551,14 +559,16 @@ async function buildAccountSummary(
   tx: Transaction,
   entry: typeof tournamentEntries.$inferSelect,
   provider: MarketPriceProvider,
+  config: ExecutionConfig,
 ): Promise<AccountSummary> {
   const rows = await tx.select().from(positions).where(eq(positions.entryId, entry.id));
-  const cash = parseMoney(entry.cash);
+  const cash = parseSignedMoney(entry.cash);
   let realized = moneyFromMinorUnits(0n);
   let totalUnrealized = moneyFromMinorUnits(0n);
   const exact = rows.map(exactPosition);
   const marks = new Map<MarketSymbol, Price>();
   const serialized: AccountSummary['positions'] = [];
+  let totalMargin = moneyFromMinorUnits(0n);
   for (const position of exact) {
     realized = moneyFromMinorUnits(realized + position.realizedPnL);
     let positionUnrealized = moneyFromMinorUnits(0n);
@@ -572,28 +582,58 @@ async function buildAccountSummary(
       positionUnrealized = unrealizedPnL(position, snapshot.price);
       totalUnrealized = moneyFromMinorUnits(totalUnrealized + positionUnrealized);
     }
+    const row = rows.find((candidate) => candidate.symbol === position.symbol)!;
+    const storedMargin = parseMoney(row.marginUsed);
+    const marginUsed =
+      position.quantity > 0n && storedMargin === 0n
+        ? priceQuantityToMoney(position.averageEntryPrice, position.quantity)
+        : storedMargin;
+    totalMargin = moneyFromMinorUnits(totalMargin + marginUsed);
+    const liquidation =
+      row.liquidationPrice === null
+        ? estimatedLiquidationPrice(
+            {
+              side: position.side,
+              quantity: position.quantity,
+              averageEntryPrice: position.averageEntryPrice,
+              leverage: row.leverage,
+              marginUsed,
+            },
+            config.maintenanceMarginBasisPoints,
+          )
+        : parsePrice(row.liquidationPrice);
     serialized.push({
       symbol: position.symbol,
       side: position.side,
+      leverage: row.leverage,
       quantity: quantityToString(position.quantity),
       averageEntryPrice:
         position.quantity === 0n ? '0.00000000' : priceToString(position.averageEntryPrice),
       currentMark,
       marketValue: moneyToString(marketValue),
+      notional: moneyToString(marketValue),
+      marginUsed: moneyToString(marginUsed),
+      liquidationPrice: liquidation ? priceToString(liquidation) : null,
       realizedPnL: signedMoneyToString(position.realizedPnL),
       unrealizedPnL: signedMoneyToString(positionUnrealized),
     });
   }
+  const equity = accountEquity(cash, exact, marks);
+  const freeMargin = moneyFromMinorUnits(equity - totalMargin);
+  const exposure = grossExposure(exact, marks);
   return {
     entryId: entry.id,
-    cash: moneyToString(cash),
+    cash: signedMoneyToString(cash),
     availableBuyingPower: signedMoneyToString(
-      moneyFromMinorUnits(accountEquity(cash, exact, marks) - grossExposure(exact, marks)),
+      maximumBuyingPower(freeMargin, config.maximumGrossLeverage),
     ),
-    positionValue: moneyToString(grossExposure(exact, marks)),
+    availableMargin: signedMoneyToString(freeMargin),
+    marginUsed: moneyToString(totalMargin),
+    positionValue: moneyToString(exposure),
+    grossExposure: moneyToString(exposure),
     realizedPnL: signedMoneyToString(realized),
     unrealizedPnL: signedMoneyToString(totalUnrealized),
-    equity: signedMoneyToString(accountEquity(cash, exact, marks)),
+    equity: signedMoneyToString(equity),
     positions: serialized,
   };
 }
@@ -602,9 +642,9 @@ export async function getAccountSummary(
   db: Database,
   provider: MarketPriceProvider,
   entryId: string,
-  _options: { config?: ExecutionConfig; now?: Date } = {},
+  options: { config?: ExecutionConfig; now?: Date } = {},
 ): Promise<AccountSummary> {
-  void _options;
+  const config = options.config ?? DEFAULT_EXECUTION_CONFIG;
   return db.transaction(async (tx) => {
     const [entry] = await tx
       .select()
@@ -612,7 +652,7 @@ export async function getAccountSummary(
       .where(eq(tournamentEntries.id, entryId))
       .for('update');
     if (!entry) throw new DomainError('ENTRY_NOT_FOUND', 'Tournament entry does not exist');
-    return buildAccountSummary(tx, entry, provider);
+    return buildAccountSummary(tx, entry, provider, config);
   });
 }
 
@@ -631,7 +671,7 @@ export async function reconcileEntry(
       .where(eq(tournamentEntries.id, entryId))
       .for('update');
     if (!entry) throw new DomainError('ENTRY_NOT_FOUND', 'Tournament entry does not exist');
-    const summary = await buildAccountSummary(tx, entry, provider);
+    const summary = await buildAccountSummary(tx, entry, provider, config);
     const persistedPositions = await tx
       .select()
       .from(positions)

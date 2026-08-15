@@ -46,11 +46,12 @@ import {
   TournamentReadService,
   TradingApiService,
 } from './services.js';
-import type {
-  ControllableMarketPriceProvider,
-  MarketHistoryProvider,
-  MarketDataProvider,
-  MarketPriceProvider,
+import {
+  SUPPORTED_SYMBOLS,
+  type ControllableMarketPriceProvider,
+  type MarketHistoryProvider,
+  type MarketDataProvider,
+  type MarketPriceProvider,
 } from '@trade-the-pool/market-data';
 
 export type ApiRuntimeConfig = Pick<
@@ -182,9 +183,7 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
       const marketHealth = richerMarket.getHealth?.();
       if (!marketHealth)
         await Promise.all(
-          ['BTC-USD', 'ETH-USD', 'SOL-USD'].map((symbol) =>
-            dependencies.market.getSnapshot(symbol as never),
-          ),
+          SUPPORTED_SYMBOLS.map((symbol) => dependencies.market.getSnapshot(symbol)),
         );
       const marketStatus = marketHealth?.markets.some((market) => market.status !== 'LIVE')
         ? 'degraded'
@@ -729,6 +728,7 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
               ...(body.intent === 'OPEN'
                 ? {
                     requestedNotional: body.notional,
+                    leverage: body.leverage,
                     takeProfitPrice: body.takeProfitPrice,
                     stopLossPrice: body.stopLossPrice,
                   }
@@ -750,6 +750,7 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
                 intent: 'OPEN' as const,
                 orderType: 'MARKET' as const,
                 requestedNotional: body.notional,
+                leverage: 1,
                 idempotencyKey,
               }
             : body.amount.type === 'QUANTITY'
@@ -792,6 +793,7 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
           positionSide: result.order.positionSide,
           intent: result.order.intent,
           orderType: result.order.orderType,
+          leverage: result.order.leverage,
           requestedNotional:
             'intent' in body
               ? body.intent === 'OPEN'
@@ -938,25 +940,35 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
       metadata: metadata
         ? {
             assetClass: metadata.assetClass,
+            displayName: metadata.displayName,
             baseCurrency: metadata.baseCurrency,
             quoteCurrency: metadata.quoteCurrency,
             tradingSchedule: metadata.tradingSchedule,
             pricePrecision: metadata.pricePrecision,
             quantityPrecision: metadata.quantityPrecision,
+            iconKey: metadata.iconKey,
+            accent: metadata.accent,
+            maxLeverage: metadata.maxLeverage,
+            sortOrder: metadata.sortOrder,
           }
         : {
             assetClass: 'CRYPTO',
+            displayName: symbol.split('-')[0],
             baseCurrency: symbol.split('-')[0],
             quoteCurrency: 'USD',
             tradingSchedule: '24/7',
             pricePrecision: 8,
             quantityPrecision: 8,
+            iconKey: symbol.split('-')[0].toLowerCase(),
+            accent: '#8b96a3',
+            maxLeverage: 1,
+            sortOrder: 999,
           },
     };
   };
   app.get('/v1/markets', { schema: { tags: ['Markets'] } }, async () => ({
     data: await Promise.all(
-      ['BTC-USD', 'ETH-USD', 'SOL-USD'].map((symbol) =>
+      SUPPORTED_SYMBOLS.map((symbol) =>
         serializeMarket(symbol as z.infer<typeof marketSymbolSchema>),
       ),
     ),

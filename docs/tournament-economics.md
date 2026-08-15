@@ -93,5 +93,5 @@ The seed contains two deliberately concentrated formats:
 - **Daily Pool:** $1,000 base bankroll, small initial simulated prize pool, short duration.
 - **Weekend Pool:** $2,500 base bankroll, larger initial simulated prize pool, longer duration.
 
-Both use BTC, ETH, and SOL spot, long-only market orders. Their fee/payout values are development
-assumptions, not final business economics.
+Both use the curated multi-asset paper market and server-authoritative trading rules. Their
+fee/payout values are development assumptions, not final business economics.

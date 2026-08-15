@@ -15,6 +15,7 @@ export const queryKeys = {
   leaderboard: (tournamentId: string, page = 1) =>
     ['tournament', tournamentId, 'leaderboard', page] as const,
   market: (symbol: MarketSymbolDto) => ['market', symbol] as const,
+  markets: ['markets'] as const,
   candles: (symbol: MarketSymbolDto, interval: CandleIntervalDto) =>
     ['market', symbol, 'candles', interval] as const,
   book: (symbol: MarketSymbolDto) => ['market', symbol, 'book'] as const,

@@ -5,6 +5,7 @@ import {
   createTournamentEntry,
   getAccountSummary,
   processConditionalOrders,
+  processLiquidations,
   setPositionProtection,
   submitTradingOrder,
 } from './index.js';
@@ -84,7 +85,7 @@ describe('professional trading orders', () => {
       const afterOpen = await getAccountSummary(db, market, entryId, { now });
       expect(afterOpen.positions[0].side).toBe('SHORT');
       expect(afterOpen.cash).toBe('10999.00');
-      expect(afterOpen.availableBuyingPower).toBe('8998.00');
+      expect(Number(afterOpen.availableBuyingPower)).toBeGreaterThan(44_000);
 
       const movedAt = new Date(now.getTime() + 1);
       market.advancePrice('ETH-USD', '3800.00', movedAt);
@@ -345,6 +346,163 @@ describe('professional trading orders', () => {
           { now: staleNow },
         ),
       ).rejects.toMatchObject({ code: 'STALE_MARKET_PRICE' });
+    });
+  });
+
+  it('enforces asset leverage caps and reserves margin across simultaneous markets', async () => {
+    await fixture(async ({ entryId, market, now }) => {
+      await submitTradingOrder(
+        db,
+        market,
+        {
+          entryId,
+          symbol: 'BTC-USD',
+          positionSide: 'LONG',
+          intent: 'OPEN',
+          orderType: 'MARKET',
+          requestedNotional: '25000.00',
+          leverage: 5,
+          idempotencyKey: 'btc-five-x',
+        },
+        { now },
+      );
+      await submitTradingOrder(
+        db,
+        market,
+        {
+          entryId,
+          symbol: 'ETH-USD',
+          positionSide: 'SHORT',
+          intent: 'OPEN',
+          orderType: 'MARKET',
+          requestedNotional: '12000.00',
+          leverage: 3,
+          idempotencyKey: 'eth-three-x',
+        },
+        { now },
+      );
+      const summary = await getAccountSummary(db, market, entryId, { now });
+      expect(
+        summary.positions.filter((position) => position.quantity !== '0.00000000'),
+      ).toHaveLength(2);
+      expect(summary.positions.map((position) => [position.symbol, position.leverage])).toEqual([
+        ['BTC-USD', 5],
+        ['ETH-USD', 3],
+      ]);
+      expect(Number(summary.marginUsed)).toBeGreaterThan(8_900);
+      await expect(
+        submitTradingOrder(
+          db,
+          market,
+          {
+            entryId,
+            symbol: 'SOL-USD',
+            positionSide: 'LONG',
+            intent: 'OPEN',
+            orderType: 'MARKET',
+            requestedNotional: '5000.00',
+            leverage: 4,
+            idempotencyKey: 'over-margin',
+          },
+          { now },
+        ),
+      ).rejects.toMatchObject({ code: 'INSUFFICIENT_MARGIN' });
+      await expect(
+        submitTradingOrder(
+          db,
+          market,
+          {
+            entryId,
+            symbol: 'SUI-USD',
+            positionSide: 'LONG',
+            intent: 'OPEN',
+            orderType: 'MARKET',
+            requestedNotional: '100.00',
+            leverage: 3,
+            idempotencyKey: 'above-sui-cap',
+          },
+          { now },
+        ),
+      ).rejects.toMatchObject({ code: 'INVALID_ORDER' });
+    });
+  });
+
+  it('reserves margin for pending open orders before any fill occurs', async () => {
+    await fixture(async ({ entryId, market, now }) => {
+      const pending = await submitTradingOrder(
+        db,
+        market,
+        {
+          entryId,
+          symbol: 'BTC-USD',
+          positionSide: 'LONG',
+          intent: 'OPEN',
+          orderType: 'LIMIT',
+          requestedNotional: '40000.00',
+          leverage: 5,
+          limitPrice: '40000.00000000',
+          idempotencyKey: 'reserved-btc-margin',
+        },
+        { now },
+      );
+      expect(pending.order).toMatchObject({ status: 'OPEN', leverage: 5 });
+
+      await expect(
+        submitTradingOrder(
+          db,
+          market,
+          {
+            entryId,
+            symbol: 'ETH-USD',
+            positionSide: 'LONG',
+            intent: 'OPEN',
+            orderType: 'LIMIT',
+            requestedNotional: '4000.00',
+            leverage: 2,
+            limitPrice: '3000.00000000',
+            idempotencyKey: 'reserved-eth-margin-overflow',
+          },
+          { now },
+        ),
+      ).rejects.toMatchObject({ code: 'INSUFFICIENT_MARGIN' });
+    });
+  });
+
+  it('liquidates a leveraged position deterministically and records the event', async () => {
+    await fixture(async ({ entryId, market, now }) => {
+      await submitTradingOrder(
+        db,
+        market,
+        {
+          entryId,
+          symbol: 'ETH-USD',
+          positionSide: 'SHORT',
+          intent: 'OPEN',
+          orderType: 'MARKET',
+          requestedNotional: '10000.00',
+          leverage: 5,
+          idempotencyKey: 'liquidated-short',
+        },
+        { now },
+      );
+      const opened = await getAccountSummary(db, market, entryId, { now });
+      expect(opened.positions[0].liquidationPrice).not.toBeNull();
+      const movedAt = new Date(now.getTime() + 1);
+      market.advancePrice('ETH-USD', '5000.00', movedAt);
+      const liquidations = await processLiquidations(db, market, 'ETH-USD', { now: movedAt });
+      expect(liquidations).toHaveLength(1);
+      expect(liquidations[0].order).toMatchObject({
+        orderType: 'LIQUIDATION',
+        status: 'FILLED',
+        leverage: 5,
+      });
+      const closed = await getAccountSummary(db, market, entryId, { now: movedAt });
+      expect(closed.positions[0]).toMatchObject({ quantity: '0.00000000', marginUsed: '0.00' });
+      const [history] = await client`
+        SELECT order_type, leverage, status FROM orders
+        WHERE entry_id = ${entryId} AND order_type = 'LIQUIDATION'
+      `;
+      expect(history).toEqual({ order_type: 'LIQUIDATION', leverage: 5, status: 'FILLED' });
     });
   });
 });

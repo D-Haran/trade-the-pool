@@ -1,4 +1,4 @@
-import { and, asc, count, eq, or } from 'drizzle-orm';
+import { and, asc, count, eq, or, sql } from 'drizzle-orm';
 import {
   accountLedgerEntries,
   fills,
@@ -15,6 +15,7 @@ import {
 } from '@trade-the-pool/market-data';
 import {
   decimalToString,
+  MARKET_REGISTRY,
   moneyFromMinorUnits,
   moneyToString,
   parseMoney,
@@ -48,9 +49,16 @@ import {
   type PositionSide,
 } from './domain.js';
 import { DomainError } from './errors.js';
+import {
+  availableMargin,
+  estimatedLiquidationPrice,
+  releasedMargin,
+  requiredMargin,
+  shouldLiquidate,
+} from './risk.js';
 
 export type TradingOrderType = 'MARKET' | 'LIMIT' | 'STOP_MARKET';
-export type StoredOrderType = TradingOrderType | 'TAKE_PROFIT' | 'STOP_LOSS';
+export type StoredOrderType = TradingOrderType | 'TAKE_PROFIT' | 'STOP_LOSS' | 'LIQUIDATION';
 export type TradingOrderRequest = {
   entryId: string;
   symbol: string;
@@ -58,6 +66,7 @@ export type TradingOrderRequest = {
   intent: 'OPEN' | 'CLOSE';
   orderType: TradingOrderType;
   requestedNotional?: string;
+  leverage?: number;
   quantity?: string;
   percentageBps?: number;
   limitPrice?: string;
@@ -77,6 +86,7 @@ export type ProfessionalOrderResult = {
     positionSide: PositionSide;
     intent: 'OPEN' | 'CLOSE';
     orderType: StoredOrderType;
+    leverage: number;
     status: 'OPEN' | 'FILLED';
     idempotencyKey: string;
   };
@@ -91,6 +101,7 @@ export type ProfessionalOrderResult = {
     slippageAmount: string;
     feeAmount: string;
     realizedPnL: string;
+    leverage: number;
     marketSource: string;
     marketTimestamp: Date;
     serverTimestamp: Date;
@@ -172,6 +183,7 @@ function serializeResult(
       positionSide: order.positionSide,
       intent: order.intent,
       orderType: order.orderType,
+      leverage: order.leverage,
       status: order.status,
       idempotencyKey: order.idempotencyKey,
     },
@@ -187,6 +199,7 @@ function serializeResult(
           slippageAmount: fill.slippageAmount,
           feeAmount: fill.feeAmount,
           realizedPnL: fill.realizedPnL,
+          leverage: fill.leverage,
           marketSource: fill.marketSource,
           marketTimestamp: fill.marketTimestamp,
           serverTimestamp: fill.serverTimestamp,
@@ -215,6 +228,16 @@ function normalizedRequest(request: TradingOrderRequest, config: ExecutionConfig
     if (notional <= 0n || notional > config.maximumOrderNotional)
       throw new DomainError('INVALID_ORDER', 'Order notional is outside configured limits');
     requestedNotional = moneyToString(notional);
+    const leverage = request.leverage ?? 1;
+    if (
+      !Number.isInteger(leverage) ||
+      leverage < 1 ||
+      leverage > MARKET_REGISTRY[symbol].maxLeverage
+    )
+      throw new DomainError(
+        'INVALID_ORDER',
+        `${symbol} supports leverage from 1x to ${MARKET_REGISTRY[symbol].maxLeverage}x`,
+      );
   } else {
     if (request.requestedNotional !== undefined)
       throw new DomainError('INVALID_ORDER', 'Close orders use quantity or percentage sizing');
@@ -256,6 +279,7 @@ function normalizedRequest(request: TradingOrderRequest, config: ExecutionConfig
     requestedNotional,
     requestedQuantity,
     requestedPercentageBps,
+    leverage: request.intent === 'OPEN' ? (request.leverage ?? 1) : 1,
     limitPrice,
     triggerPrice,
     takeProfitPrice:
@@ -275,6 +299,7 @@ function sameLogicalRequest(
     order.positionSide === request.positionSide &&
     order.intent === request.intent &&
     order.orderType === request.orderType &&
+    (request.intent === 'CLOSE' || order.leverage === request.leverage) &&
     order.requestedNotional === request.requestedNotional &&
     order.requestedQuantity === request.requestedQuantity &&
     order.requestedPercentageBps === request.requestedPercentageBps &&
@@ -302,7 +327,7 @@ function validatesProtection(
 }
 
 function triggerSatisfied(order: OrderRow, mark: Price): boolean {
-  if (order.orderType === 'MARKET') return true;
+  if (order.orderType === 'MARKET' || order.orderType === 'LIQUIDATION') return true;
   if (order.orderType === 'LIMIT') {
     const limit = parsePrice(order.limitPrice!);
     return order.side === 'BUY' ? mark <= limit : mark >= limit;
@@ -337,6 +362,53 @@ async function loadAccountBasis(
   return { exact, marks };
 }
 
+async function loadMarginState(
+  tx: Transaction,
+  entryId: string,
+  cash: Money,
+  provider: MarketPriceProvider,
+  config: ExecutionConfig,
+  now: Date,
+  currentSnapshot?: Awaited<ReturnType<typeof authoritativeSnapshot>>,
+  excludeOrderId?: string,
+) {
+  const basis = await loadAccountBasis(tx, entryId, provider, config, now, currentSnapshot);
+  const positionRows = await tx.select().from(positions).where(eq(positions.entryId, entryId));
+  const marginUsed = moneyFromMinorUnits(
+    positionRows.reduce(
+      (total, position) =>
+        total + (parseQuantity(position.quantity) > 0n ? parseMoney(position.marginUsed) : 0n),
+      0n,
+    ),
+  );
+  const pending = await tx
+    .select({
+      id: orders.id,
+      requestedNotional: orders.requestedNotional,
+      leverage: orders.leverage,
+    })
+    .from(orders)
+    .where(and(eq(orders.entryId, entryId), eq(orders.intent, 'OPEN'), eq(orders.status, 'OPEN')));
+  let reservedMargin = moneyFromMinorUnits(0n);
+  let reservedNotional = moneyFromMinorUnits(0n);
+  for (const order of pending) {
+    if (order.id === excludeOrderId || order.requestedNotional === null) continue;
+    const notional = parseMoney(order.requestedNotional);
+    reservedNotional = moneyFromMinorUnits(reservedNotional + notional);
+    reservedMargin = moneyFromMinorUnits(reservedMargin + requiredMargin(notional, order.leverage));
+  }
+  const equity = accountEquity(cash, basis.exact, basis.marks);
+  return {
+    ...basis,
+    equity,
+    marginUsed,
+    reservedMargin,
+    reservedNotional,
+    freeMargin: availableMargin(equity, marginUsed, reservedMargin),
+    grossExposure: grossExposure(basis.exact, basis.marks),
+  };
+}
+
 async function persistAccountState(
   tx: Transaction,
   entryId: string,
@@ -345,7 +417,7 @@ async function persistAccountState(
   config: ExecutionConfig,
   now: Date,
   currentSnapshot?: Awaited<ReturnType<typeof authoritativeSnapshot>>,
-): Promise<void> {
+): Promise<Money> {
   const { exact, marks } = await loadAccountBasis(
     tx,
     entryId,
@@ -364,6 +436,11 @@ async function persistAccountState(
       );
   }
   const equity = accountEquity(cash, exact, marks);
+  const busted = equity <= 0n;
+  const [currentEntry] = await tx
+    .select({ isBusted: tournamentEntries.isBusted, bustedAt: tournamentEntries.bustedAt })
+    .from(tournamentEntries)
+    .where(eq(tournamentEntries.id, entryId));
   await tx
     .update(tournamentEntries)
     .set({
@@ -371,9 +448,22 @@ async function persistAccountState(
       realizedPnL: signedMoneyToString(realized),
       unrealizedPnL: signedMoneyToString(unrealized),
       currentEquity: signedMoneyToString(equity),
+      isBusted: currentEntry?.isBusted || busted,
+      bustedAt: currentEntry?.bustedAt ?? (busted ? now : null),
       updatedAt: now,
     })
     .where(eq(tournamentEntries.id, entryId));
+  if (busted)
+    await tx
+      .update(orders)
+      .set({
+        status: 'EXPIRED',
+        cancellationReason: 'Entry busted',
+        cancelledAt: now,
+        updatedAt: now,
+      })
+      .where(and(eq(orders.entryId, entryId), eq(orders.status, 'OPEN')));
+  return equity;
 }
 
 async function insertProtectionOrders(
@@ -389,6 +479,7 @@ async function insertProtectionOrders(
     symbol: parent.symbol,
     side: executionSide(parent.positionSide, 'CLOSE'),
     positionSide: parent.positionSide,
+    leverage: parent.leverage,
     intent: 'CLOSE' as const,
     requestedNotional: null,
     requestedQuantity: null,
@@ -431,6 +522,8 @@ async function executePersistedOrder(
     .where(eq(tournamentEntries.id, order.entryId))
     .for('update');
   if (!entry) throw new DomainError('ENTRY_NOT_FOUND', 'Tournament entry does not exist');
+  if (entry.isBusted && order.intent === 'OPEN')
+    throw new DomainError('ENTRY_BUSTED', 'This tournament entry has been busted and cannot trade');
   const [tournament] = await tx
     .select()
     .from(tournaments)
@@ -454,7 +547,7 @@ async function executePersistedOrder(
     .from(positions)
     .where(and(eq(positions.entryId, order.entryId), eq(positions.symbol, order.symbol)));
   const currentPosition = positionRow ? exactPosition(positionRow) : null;
-  const cash = parseMoney(entry.cash);
+  const cash = parseSignedMoney(entry.cash);
 
   let quantity: Quantity;
   let referenceNotional: Money;
@@ -499,25 +592,43 @@ async function executePersistedOrder(
   const fee = calculateFee(notional, config);
 
   if (order.intent === 'OPEN') {
-    const { exact, marks } = await loadAccountBasis(
+    if (
+      currentPosition &&
+      currentPosition.quantity > 0n &&
+      positionRow?.leverage !== order.leverage
+    )
+      throw new DomainError(
+        'POSITION_LEVERAGE_CONFLICT',
+        `Existing ${order.symbol} position uses ${positionRow?.leverage}x leverage`,
+      );
+    const risk = await loadMarginState(
       tx,
       order.entryId,
+      cash,
       provider,
       config,
       now,
       snapshot,
+      order.id,
     );
-    const equity = accountEquity(cash, exact, marks);
-    const available = moneyFromMinorUnits(equity - grossExposure(exact, marks));
-    if (referenceNotional + fee > available)
+    const initialMargin = requiredMargin(notional, order.leverage);
+    if (initialMargin + fee > risk.freeMargin)
       throw new DomainError(
-        'INSUFFICIENT_CASH',
-        'Available simulated buying power does not cover this 1x order and fee',
+        'INSUFFICIENT_MARGIN',
+        'Available simulated margin does not cover this order and fee',
+      );
+    const maximumGrossExposure = risk.equity * BigInt(config.maximumGrossLeverage);
+    if (risk.grossExposure + risk.reservedNotional + notional > maximumGrossExposure)
+      throw new DomainError(
+        'INSUFFICIENT_MARGIN',
+        `Gross exposure cannot exceed ${config.maximumGrossLeverage}x current equity`,
       );
   }
 
   let nextPosition: ExactPosition;
   let realizedOnFill = moneyFromMinorUnits(0n);
+  let nextMargin = moneyFromMinorUnits(0n);
+  let effectiveLeverage = order.leverage;
   if (order.intent === 'OPEN') {
     nextPosition = increasePosition(
       currentPosition,
@@ -525,6 +636,9 @@ async function executePersistedOrder(
       order.positionSide,
       quantity,
       quote.fillPrice,
+    );
+    nextMargin = moneyFromMinorUnits(
+      parseMoney(positionRow?.marginUsed ?? '0.00') + requiredMargin(notional, order.leverage),
     );
   } else {
     const decreased = decreasePosition(
@@ -535,12 +649,25 @@ async function executePersistedOrder(
     );
     nextPosition = decreased.position;
     realizedOnFill = decreased.realizedOnFill;
+    effectiveLeverage = positionRow?.leverage ?? order.leverage;
+    const currentMargin = parseMoney(positionRow?.marginUsed ?? '0.00');
+    nextMargin = moneyFromMinorUnits(
+      currentMargin - releasedMargin(currentMargin, quantity, currentPosition!.quantity),
+    );
   }
   const nextCash = moneyFromMinorUnits(
     order.side === 'BUY' ? cash - notional - fee : cash + notional - fee,
   );
-  if (nextCash < 0n)
-    throw new DomainError('INSUFFICIENT_CASH', 'Available cash cannot cover the simulated buyback');
+  const liquidationPrice = estimatedLiquidationPrice(
+    {
+      side: nextPosition.side,
+      quantity: nextPosition.quantity,
+      averageEntryPrice: nextPosition.averageEntryPrice,
+      leverage: effectiveLeverage,
+      marginUsed: nextMargin,
+    },
+    config.maintenanceMarginBasisPoints,
+  );
 
   await tx
     .insert(positions)
@@ -548,22 +675,28 @@ async function executePersistedOrder(
       entryId: order.entryId,
       symbol: order.symbol,
       side: nextPosition.side,
+      leverage: effectiveLeverage,
       quantity: quantityToString(nextPosition.quantity),
       averageEntryPrice:
         nextPosition.quantity === 0n ? '0.00000000' : priceToString(nextPosition.averageEntryPrice),
       realizedPnL: signedMoneyToString(nextPosition.realizedPnL),
+      marginUsed: moneyToString(nextMargin),
+      liquidationPrice: liquidationPrice ? priceToString(liquidationPrice) : null,
       updatedAt: now,
     })
     .onConflictDoUpdate({
       target: [positions.entryId, positions.symbol],
       set: {
         side: nextPosition.side,
+        leverage: effectiveLeverage,
         quantity: quantityToString(nextPosition.quantity),
         averageEntryPrice:
           nextPosition.quantity === 0n
             ? '0.00000000'
             : priceToString(nextPosition.averageEntryPrice),
         realizedPnL: signedMoneyToString(nextPosition.realizedPnL),
+        marginUsed: moneyToString(nextMargin),
+        liquidationPrice: liquidationPrice ? priceToString(liquidationPrice) : null,
         updatedAt: now,
       },
     });
@@ -582,6 +715,7 @@ async function executePersistedOrder(
       side: order.side,
       positionSide: order.positionSide,
       intent: order.intent,
+      leverage: effectiveLeverage,
       referencePrice: priceToString(quote.referencePrice),
       fillPrice: priceToString(quote.fillPrice),
       quantity: quantityToString(quantity),
@@ -612,6 +746,8 @@ async function executePersistedOrder(
       side: order.side,
       positionSide: order.positionSide,
       intent: order.intent,
+      leverage: effectiveLeverage,
+      marginUsed: moneyToString(nextMargin),
     },
     createdAt: now,
   };
@@ -629,6 +765,8 @@ async function executePersistedOrder(
         side: order.side,
         positionSide: order.positionSide,
         intent: order.intent,
+        leverage: effectiveLeverage,
+        marginUsed: moneyToString(nextMargin),
       },
       createdAt: now,
     },
@@ -696,6 +834,11 @@ export async function submitTradingOrder(
       .where(eq(tournamentEntries.id, normalized.entryId))
       .for('update');
     if (!entry) throw new DomainError('ENTRY_NOT_FOUND', 'Tournament entry does not exist');
+    if (entry.isBusted)
+      throw new DomainError(
+        'ENTRY_BUSTED',
+        'This tournament entry has been busted and cannot trade',
+      );
     const [existing] = await tx
       .select()
       .from(orders)
@@ -739,6 +882,36 @@ export async function submitTradingOrder(
       normalized.stopLossPrice ? parsePrice(normalized.stopLossPrice) : null,
     );
 
+    let effectiveLeverage = normalized.leverage;
+    if (normalized.intent === 'CLOSE') {
+      const [position] = await tx
+        .select({ leverage: positions.leverage })
+        .from(positions)
+        .where(
+          and(eq(positions.entryId, normalized.entryId), eq(positions.symbol, normalized.symbol)),
+        );
+      effectiveLeverage = position?.leverage ?? 1;
+    } else {
+      const cash = parseSignedMoney(entry.cash);
+      const risk = await loadMarginState(tx, entry.id, cash, provider, config, now, snapshot);
+      const notional = parseMoney(normalized.requestedNotional!);
+      const initialMargin = requiredMargin(notional, effectiveLeverage);
+      const fee = calculateFee(notional, config);
+      if (initialMargin + fee > risk.freeMargin)
+        throw new DomainError(
+          'INSUFFICIENT_MARGIN',
+          'Available simulated margin does not cover this order and fee',
+        );
+      if (
+        risk.grossExposure + risk.reservedNotional + notional >
+        risk.equity * BigInt(config.maximumGrossLeverage)
+      )
+        throw new DomainError(
+          'INSUFFICIENT_MARGIN',
+          `Gross exposure cannot exceed ${config.maximumGrossLeverage}x current equity`,
+        );
+    }
+
     const [created] = await tx
       .insert(orders)
       .values({
@@ -748,6 +921,7 @@ export async function submitTradingOrder(
         positionSide: normalized.positionSide,
         intent: normalized.intent,
         orderType: normalized.orderType,
+        leverage: effectiveLeverage,
         requestedNotional: normalized.requestedNotional,
         requestedQuantity: normalized.requestedQuantity,
         requestedPercentageBps: normalized.requestedPercentageBps,
@@ -779,6 +953,85 @@ export async function submitTradingOrder(
     }
     return serializeResult(created, null, false);
   });
+}
+
+/** Server-authoritative isolated-position liquidation pass for one market tick. */
+export async function processLiquidations(
+  db: Database,
+  provider: MarketPriceProvider,
+  symbolValue: string,
+  options: { config?: ExecutionConfig; now?: Date } = {},
+): Promise<ProfessionalOrderResult[]> {
+  const config = options.config ?? DEFAULT_EXECUTION_CONFIG;
+  const now = options.now ?? new Date();
+  const symbol = symbolFrom(symbolValue, config);
+  const snapshot = await authoritativeSnapshot(provider, symbol, now, config);
+  const candidates = await db
+    .select({ entryId: positions.entryId })
+    .from(positions)
+    .where(
+      and(
+        eq(positions.symbol, symbol),
+        sql`${positions.quantity} > 0`,
+        sql`${positions.liquidationPrice} IS NOT NULL`,
+      ),
+    );
+  const results: ProfessionalOrderResult[] = [];
+  for (const candidate of candidates) {
+    const result = await db.transaction(async (tx) => {
+      const [entry] = await tx
+        .select()
+        .from(tournamentEntries)
+        .where(eq(tournamentEntries.id, candidate.entryId))
+        .for('update');
+      if (!entry) return null;
+      const [position] = await tx
+        .select()
+        .from(positions)
+        .where(and(eq(positions.entryId, candidate.entryId), eq(positions.symbol, symbol)))
+        .for('update');
+      if (
+        !position ||
+        parseQuantity(position.quantity) <= 0n ||
+        position.liquidationPrice === null ||
+        !shouldLiquidate(position.side, snapshot.price, parsePrice(position.liquidationPrice))
+      )
+        return null;
+      const idempotencyKey = `liquidation:${symbol}:${position.updatedAt.getTime()}`;
+      const [existing] = await tx
+        .select()
+        .from(orders)
+        .where(
+          and(eq(orders.entryId, candidate.entryId), eq(orders.idempotencyKey, idempotencyKey)),
+        );
+      if (existing) {
+        const [fill] = await tx.select().from(fills).where(eq(fills.orderId, existing.id));
+        return fill ? serializeResult(existing, fill, true) : null;
+      }
+      const [order] = await tx
+        .insert(orders)
+        .values({
+          entryId: candidate.entryId,
+          symbol,
+          side: executionSide(position.side, 'CLOSE'),
+          positionSide: position.side,
+          intent: 'CLOSE',
+          orderType: 'LIQUIDATION',
+          leverage: position.leverage,
+          requestedPercentageBps: 10_000,
+          status: 'TRIGGERED',
+          idempotencyKey,
+          triggeredAt: now,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning();
+      const executed = await executePersistedOrder(tx, provider, order, now, config);
+      return serializeResult(executed.order, executed.fill, false);
+    });
+    if (result) results.push(result);
+  }
+  return results;
 }
 
 export async function processConditionalOrders(
@@ -980,6 +1233,7 @@ export async function setPositionProtection(
       symbol,
       side: executionSide(positionRow.side, 'CLOSE'),
       positionSide: positionRow.side,
+      leverage: positionRow.leverage,
       intent: 'CLOSE' as const,
       requestedPercentageBps: 10_000,
       status: 'OPEN' as const,

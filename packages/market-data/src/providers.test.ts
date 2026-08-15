@@ -1,15 +1,18 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { priceToString } from '@trade-the-pool/shared';
 import {
   boundedBackoffMs,
   KrakenMarketDataAdapter,
+  PythHermesAdapter,
   parseJsonPreservingDecimals,
   parsePythUpdates,
   pythIntegerToPrice,
 } from './providers.js';
 import { krakenBookChecksum } from './order-book.js';
 import type { UpstreamEvent } from './providers.js';
-import { canonicalSymbol } from './types.js';
+import { canonicalSymbol, SUPPORTED_SYMBOLS, type MarketSymbol } from './types.js';
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe('provider normalization', () => {
   it('preserves upstream decimal lexemes and rejects malformed JSON', () => {
@@ -64,13 +67,62 @@ describe('provider normalization', () => {
   it('keeps provider symbol formats inside canonical adapter mappings', () => {
     expect(canonicalSymbol('kraken', 'BTC/USD')).toBe('BTC-USD');
     expect(canonicalSymbol('coinbase', 'ETH-USD')).toBe('ETH-USD');
-    expect(canonicalSymbol('kraken', 'DOGE/USD')).toBeNull();
+    expect(canonicalSymbol('kraken', 'DOGE/USD')).toBe('DOGE-USD');
+    expect(canonicalSymbol('kraken', 'PEPE/USD')).toBeNull();
   });
 
   it('uses bounded exponential reconnect backoff with jitter', () => {
     expect(boundedBackoffMs(0, () => 0)).toBe(500);
     expect(boundedBackoffMs(20, () => 0)).toBe(30_000);
     expect(boundedBackoffMs(20, () => 0.999)).toBeLessThanOrEqual(32_000);
+  });
+
+  it('keeps entitled Pyth symbol streams live when another symbol is forbidden', async () => {
+    const btcId = 'aa'.repeat(32);
+    const feedIds = Object.fromEntries(
+      SUPPORTED_SYMBOLS.map((symbol) => [
+        symbol,
+        symbol === 'BTC-USD' ? btcId : 'bb'.repeat(32),
+      ]),
+    ) as Record<MarketSymbol, string>;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        if (!url.includes(btcId)) return new Response('Not entitled', { status: 403 });
+        const body = new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              new TextEncoder().encode(
+                `data:${JSON.stringify({ parsed: [{ id: btcId, price: { price: '10000000000', conf: '1', expo: -8, publish_time: 1_800_000_000 } }] })}\n\n`,
+              ),
+            );
+          },
+        });
+        return new Response(body, { status: 200 });
+      }),
+    );
+    const adapter = new PythHermesAdapter({
+      hermesUrl: 'https://example.invalid',
+      apiKey: 'test-key',
+      feedIds,
+    });
+    const events: UpstreamEvent[] = [];
+    adapter.subscribe((event) => events.push(event));
+    adapter.start();
+    await vi.waitFor(() =>
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: 'price',
+          role: 'AUTHORITATIVE',
+          snapshot: expect.objectContaining({ symbol: 'BTC-USD' }),
+        }),
+      ),
+    );
+    expect(adapter.getHealth()).toMatchObject({ connection: 'CONNECTED' });
+    expect(adapter.getHealth().lastError).toContain('not entitled for this symbol');
+    expect(adapter.getHealth().lastError).not.toContain('bb'.repeat(32));
+    adapter.close();
   });
 
   it('normalizes recorded Kraken ticker, trade, candle, and L2 snapshot messages', () => {

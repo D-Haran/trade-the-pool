@@ -93,7 +93,7 @@ export function HomePage() {
               n: '02',
               icon: BarChart3,
               title: 'Trade the market',
-              text: 'Build long-only positions in BTC, ETH, and SOL with deterministic market execution.',
+              text: 'Trade a curated liquid crypto universe long or short with asset-specific simulated leverage.',
             },
             {
               n: '03',

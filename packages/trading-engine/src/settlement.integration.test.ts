@@ -2,6 +2,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { createDatabase } from '@trade-the-pool/database';
 import {
   DeterministicMarketPriceSource,
+  SUPPORTED_SYMBOLS,
   type MarketPriceProvider,
 } from '@trade-the-pool/market-data';
 import {
@@ -112,7 +113,7 @@ describe('tournament settlement', () => {
       const expected = await getAccountSummary(db, market, entryId, { now: settledAt });
 
       const result = await settleTournament(db, market, tournamentId, { now: settledAt });
-      expect(Object.keys(result.settlementMarks).sort()).toEqual(['BTC-USD', 'ETH-USD', 'SOL-USD']);
+      expect(Object.keys(result.settlementMarks).sort()).toEqual([...SUPPORTED_SYMBOLS].sort());
       const [tournament] = await client`
         SELECT status FROM tournaments WHERE id = ${tournamentId}
       `;
@@ -132,7 +133,7 @@ describe('tournament settlement', () => {
         unrealized_pnl: expected.unrealizedPnL,
       });
       expect(order.status).toBe('EXPIRED');
-      expect(marks).toHaveLength(3);
+      expect(marks).toHaveLength(SUPPORTED_SYMBOLS.length);
       expect(new Set(marks.map((mark) => mark.source))).toEqual(
         new Set(['deterministic-memory-v1']),
       );
@@ -151,7 +152,7 @@ describe('tournament settlement', () => {
           SELECT count(*)::int AS count FROM tournament_settlement_marks
           WHERE tournament_id = ${tournamentId}
         `,
-      ).toEqual([{ count: 3 }]);
+      ).toEqual([{ count: SUPPORTED_SYMBOLS.length }]);
     });
   });
 

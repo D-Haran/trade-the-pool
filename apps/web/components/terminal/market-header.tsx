@@ -1,13 +1,19 @@
 'use client';
 
-import type { MarketSnapshotDto, MarketSymbolDto } from '@trade-the-pool/shared';
+import {
+  MARKET_REGISTRY,
+  SUPPORTED_MARKET_SYMBOLS,
+  type MarketSnapshotDto,
+  type MarketSymbolDto,
+} from '@trade-the-pool/shared';
 import { ChevronDown, Radio, Search } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { cn } from '@/lib/cn';
 import { formatPrice } from '@/lib/format';
 import { marketDataStatusLabel } from '@/lib/market-data-status';
+import { AssetIcon } from './asset-icon';
 
-const symbols: MarketSymbolDto[] = ['BTC-USD', 'ETH-USD', 'SOL-USD'];
+const symbols: MarketSymbolDto[] = [...SUPPORTED_MARKET_SYMBOLS];
 
 function changeLabel(value: string | null | undefined): string {
   if (value == null) return '—';
@@ -32,7 +38,14 @@ export function MarketHeader({
   const active = markets[symbol];
   const displayStatus = marketDataStatusLabel(active?.dataMode, freshness);
   const filtered = useMemo(
-    () => symbols.filter((item) => item.toLowerCase().includes(search.toLowerCase())),
+    () =>
+      symbols.filter((item) => {
+        const query = search.toLowerCase();
+        return (
+          item.toLowerCase().includes(query) ||
+          MARKET_REGISTRY[item].displayName.toLowerCase().includes(query)
+        );
+      }),
     [search],
   );
   return (
@@ -42,12 +55,13 @@ export function MarketHeader({
           className="market-selector-trigger"
           onClick={() => setPickerOpen((value) => !value)}
         >
-          <span className={`asset-mark asset-mark--${symbol.split('-')[0].toLowerCase()}`}>
-            {symbol.split('-')[0].slice(0, 1)}
-          </span>
+          <AssetIcon symbol={symbol} />
           <span>
             <strong>{symbol.replace('-', '/')}</strong>
-            <small>Crypto · 24/7</small>
+            <small>
+              {MARKET_REGISTRY[symbol].displayName} · 24/7 · up to{' '}
+              {MARKET_REGISTRY[symbol].maxLeverage}x
+            </small>
           </span>
           <ChevronDown aria-hidden="true" />
         </button>
@@ -81,8 +95,14 @@ export function MarketHeader({
                   }}
                 >
                   <span>
-                    <strong>{item.replace('-', '/')}</strong>
-                    <small>{item.split('-')[0]} spot</small>
+                    <AssetIcon symbol={item} size={24} />
+                    <span>
+                      <strong>{item.replace('-', '/')}</strong>
+                      <small>
+                        {MARKET_REGISTRY[item].displayName} · max{' '}
+                        {MARKET_REGISTRY[item].maxLeverage}x
+                      </small>
+                    </span>
                   </span>
                   <b className="tabular">{market ? formatPrice(market.price) : '—'}</b>
                   <b

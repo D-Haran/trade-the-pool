@@ -73,11 +73,12 @@ positions, P&L, history, and authorization boundary.
 
 Order submissions use a stable idempotency key for the lifetime of one user intent. Network or
 ambiguous failures retain that key so a retry cannot duplicate a fill. A successful fill or a
-materially edited order creates the next intent. The ticket supports explicit LONG/SHORT 1x paper
-positions, market/limit/stop execution, notional presets, and optional take-profit/stop-loss
-prices. Position rows expose 25%/50%/full server-validated closes and editable protection. All
-monetary and quantity fields remain decimal strings in the browser and are never used for
-accounting calculations.
+materially edited order creates the next intent. The ticket supports explicit LONG/SHORT paper
+positions, asset-capped 1x–5x simulated leverage, market/limit/stop execution, notional presets,
+margin and liquidation estimates, and optional take-profit/stop-loss prices. Position rows expose
+leverage, notional, margin, liquidation price, 25%/50%/full server-validated closes, and editable
+protection. All monetary and quantity fields remain decimal strings in the browser and are never
+used for accounting calculations.
 
 ## Market chart
 
@@ -94,9 +95,11 @@ order ticket. Depth rows show exact price, size, cumulative size, spread, and re
 Book updates are batched with `requestAnimationFrame`; trades use a bounded list. Both bootstrap
 from REST and use the selected market's existing WebSocket topic thereafter.
 
-The terminal keeps a persistent `PAPER` identity and selected market preferences in Zustand. Its
-desktop layout keeps the watchlist, chart, order ticket, tournament/account strip, and data tabs in
-view together. Mobile preserves the same hierarchy as stacked sections and card-like table rows.
+The terminal keeps a persistent `PAPER` identity and selected market preferences in Zustand. A
+single bulk market query powers the scrollable 12-asset watchlist and objective Market Pulse
+signals; only the active market receives the high-frequency chart subscription. Its desktop layout
+keeps the watchlist, chart, order ticket, tournament/account strip, and data tabs in view together.
+Mobile preserves the same hierarchy as stacked sections and card-like table rows.
 Open orders, order history, trades, performance, positions, and leaderboard panels use API state;
 missing performance statistics such as durable max drawdown render as unavailable.
 

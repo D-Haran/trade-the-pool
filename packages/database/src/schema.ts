@@ -25,7 +25,20 @@ export const tournamentStatus = pgEnum('tournament_status', [
   'COMPLETED',
   'CANCELLED',
 ]);
-export const tradingSymbol = pgEnum('trading_symbol', ['BTC-USD', 'ETH-USD', 'SOL-USD']);
+export const tradingSymbol = pgEnum('trading_symbol', [
+  'BTC-USD',
+  'ETH-USD',
+  'SOL-USD',
+  'XRP-USD',
+  'DOGE-USD',
+  'LINK-USD',
+  'AVAX-USD',
+  'ADA-USD',
+  'SUI-USD',
+  'AAVE-USD',
+  'NEAR-USD',
+  'LTC-USD',
+]);
 export const orderSide = pgEnum('order_side', ['BUY', 'SELL']);
 export const positionSide = pgEnum('position_side', ['LONG', 'SHORT']);
 export const orderIntent = pgEnum('order_intent', ['OPEN', 'CLOSE']);
@@ -35,6 +48,7 @@ export const orderType = pgEnum('order_type', [
   'STOP_MARKET',
   'TAKE_PROFIT',
   'STOP_LOSS',
+  'LIQUIDATION',
 ]);
 export const orderStatus = pgEnum('order_status', [
   'PENDING',
@@ -219,6 +233,8 @@ export const tournamentEntries = pgTable(
     realizedPnL: numeric('realized_pnl', { precision: 20, scale: 2 }).notNull(),
     unrealizedPnL: numeric('unrealized_pnl', { precision: 20, scale: 2 }).notNull(),
     currentEquity: numeric('current_equity', { precision: 20, scale: 2 }).notNull(),
+    isBusted: boolean('is_busted').notNull().default(false),
+    bustedAt: timestamp('busted_at', { withTimezone: true }),
     ...timestamps,
   },
   (table) => [
@@ -263,6 +279,7 @@ export const orders = pgTable(
     positionSide: positionSide('position_side').notNull().default('LONG'),
     intent: orderIntent('intent').notNull().default('OPEN'),
     orderType: orderType('order_type').notNull().default('MARKET'),
+    leverage: integer('leverage').notNull().default(1),
     requestedNotional: numeric('requested_notional', { precision: 20, scale: 2 }),
     requestedQuantity: numeric('requested_quantity', { precision: 28, scale: 8 }),
     requestedPercentageBps: integer('requested_percentage_bps'),
@@ -285,6 +302,7 @@ export const orders = pgTable(
       'orders_requested_notional_positive',
       sql`${table.requestedNotional} IS NULL OR ${table.requestedNotional} > 0`,
     ),
+    check('orders_leverage_valid', sql`${table.leverage} >= 1 AND ${table.leverage} <= 5`),
     check(
       'orders_requested_quantity_positive',
       sql`${table.requestedQuantity} IS NULL OR ${table.requestedQuantity} > 0`,
@@ -299,7 +317,7 @@ export const orders = pgTable(
     ),
     check(
       'orders_price_shape_valid',
-      sql`(${table.orderType} = 'MARKET' AND ${table.limitPrice} IS NULL AND ${table.triggerPrice} IS NULL) OR (${table.orderType} = 'LIMIT' AND ${table.limitPrice} IS NOT NULL AND ${table.triggerPrice} IS NULL) OR (${table.orderType} IN ('STOP_MARKET', 'TAKE_PROFIT', 'STOP_LOSS') AND ${table.limitPrice} IS NULL AND ${table.triggerPrice} IS NOT NULL)`,
+      sql`(${table.orderType} IN ('MARKET', 'LIQUIDATION') AND ${table.limitPrice} IS NULL AND ${table.triggerPrice} IS NULL) OR (${table.orderType} = 'LIMIT' AND ${table.limitPrice} IS NOT NULL AND ${table.triggerPrice} IS NULL) OR (${table.orderType} IN ('STOP_MARKET', 'TAKE_PROFIT', 'STOP_LOSS') AND ${table.limitPrice} IS NULL AND ${table.triggerPrice} IS NOT NULL)`,
     ),
   ],
 );
@@ -319,6 +337,7 @@ export const fills = pgTable(
     side: orderSide('side').notNull(),
     positionSide: positionSide('position_side').notNull().default('LONG'),
     intent: orderIntent('intent').notNull().default('OPEN'),
+    leverage: integer('leverage').notNull().default(1),
     referencePrice: numeric('reference_price', { precision: 28, scale: 8 }).notNull(),
     fillPrice: numeric('fill_price', { precision: 28, scale: 8 }).notNull(),
     quantity: numeric('quantity', { precision: 28, scale: 8 }).notNull(),
@@ -336,6 +355,7 @@ export const fills = pgTable(
     uniqueIndex('fills_order_idx').on(table.orderId),
     uniqueIndex('fills_entry_sequence_idx').on(table.entryId, table.executionSequence),
     check('fills_execution_sequence_positive', sql`${table.executionSequence} > 0`),
+    check('fills_leverage_valid', sql`${table.leverage} >= 1 AND ${table.leverage} <= 5`),
     check('fills_prices_positive', sql`${table.referencePrice} > 0 AND ${table.fillPrice} > 0`),
     check('fills_quantity_positive', sql`${table.quantity} > 0`),
     check(
@@ -353,14 +373,19 @@ export const positions = pgTable(
       .references(() => tournamentEntries.id),
     symbol: tradingSymbol('symbol').notNull(),
     side: positionSide('side').notNull().default('LONG'),
+    leverage: integer('leverage').notNull().default(1),
     quantity: numeric('quantity', { precision: 28, scale: 8 }).notNull(),
     averageEntryPrice: numeric('average_entry_price', { precision: 28, scale: 8 }).notNull(),
     realizedPnL: numeric('realized_pnl', { precision: 20, scale: 2 }).notNull(),
+    marginUsed: numeric('margin_used', { precision: 20, scale: 2 }).notNull().default('0.00'),
+    liquidationPrice: numeric('liquidation_price', { precision: 28, scale: 8 }),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     primaryKey({ columns: [table.entryId, table.symbol] }),
     check('positions_quantity_nonnegative', sql`${table.quantity} >= 0`),
+    check('positions_leverage_valid', sql`${table.leverage} >= 1 AND ${table.leverage} <= 5`),
+    check('positions_margin_nonnegative', sql`${table.marginUsed} >= 0`),
     check('positions_average_price_nonnegative', sql`${table.averageEntryPrice} >= 0`),
     check(
       'positions_quantity_average_price_consistent',

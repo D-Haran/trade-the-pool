@@ -6,7 +6,8 @@ import type {
   LeaderboardPageDto,
   TournamentDto,
 } from '@trade-the-pool/shared';
-import { ChevronDown, Clock3 } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronDown, Clock3 } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import { cn } from '@/lib/cn';
 import { formatUsd, isPositive } from '@/lib/format';
 import { Countdown } from '../countdown';
@@ -40,11 +41,25 @@ export function TournamentStatus({
   onSwitch: (entry: EntrySummaryDto) => void;
   onExpire: () => void;
 }) {
+  const previousRank = useRef(account.rank);
+  const [rankDelta, setRankDelta] = useState(0);
+  useEffect(() => {
+    if (previousRank.current && account.rank && previousRank.current !== account.rank) {
+      setRankDelta(previousRank.current - account.rank);
+      const timer = window.setTimeout(() => setRankDelta(0), 4_000);
+      previousRank.current = account.rank;
+      return () => window.clearTimeout(timer);
+    }
+    previousRank.current = account.rank;
+  }, [account.rank]);
   const projectedPrize = tournament?.payoutProjection.prizes.find(
     (prize) => prize.position === account.rank,
   )?.amount;
   const podiumScore = leaderboard?.data.find((row) => row.rank === 3)?.score;
   const podiumGap = podiumScore ? subtractMoney(podiumScore, account.score) : null;
+  const cashLine = tournament?.payoutProjection.cashLinePosition ?? 0;
+  const cashLineScore = leaderboard?.data.find((row) => row.rank === cashLine)?.score;
+  const cashGap = cashLineScore ? subtractMoney(cashLineScore, account.score) : null;
   return (
     <div className="terminal-tournament-bar">
       <div className="terminal-entry-switcher">
@@ -74,7 +89,15 @@ export function TournamentStatus({
       <dl className="tournament-metrics">
         <div>
           <dt>RANK</dt>
-          <dd className="tabular">{account.rank ? `#${account.rank}` : '—'}</dd>
+          <dd className={cn('tabular rank-feedback', rankDelta && 'is-changing')}>
+            {account.rank ? `#${account.rank}` : '—'}
+            {rankDelta ? (
+              <span className={rankDelta > 0 ? 'positive' : 'negative'}>
+                {rankDelta > 0 ? <ArrowUp aria-hidden="true" /> : <ArrowDown aria-hidden="true" />}
+                {Math.abs(rankDelta)}
+              </span>
+            ) : null}
+          </dd>
         </div>
         <div>
           <dt>TOURNAMENT P&amp;L</dt>
@@ -108,8 +131,12 @@ export function TournamentStatus({
         <div>
           <dt>CASH LINE</dt>
           <dd className="tabular">
-            {tournament?.payoutProjection.cashLinePosition
-              ? `#${tournament.payoutProjection.cashLinePosition}`
+            {cashLine
+              ? account.rank && account.rank <= cashLine
+                ? `#${cashLine} · IN CASH`
+                : cashGap && !cashGap.startsWith('-')
+                  ? `${formatUsd(cashGap, { signed: true })} TO CASH`
+                  : `#${cashLine}`
               : '—'}
           </dd>
         </div>
@@ -131,12 +158,16 @@ export function AccountStrip({ account }: { account: EntryDetailDto }) {
         <dd className="tabular">{formatUsd(account.equity)}</dd>
       </div>
       <div>
-        <dt>AVAILABLE BUYING POWER</dt>
-        <dd className="tabular">{formatUsd(account.availableBuyingPower)}</dd>
+        <dt>AVAILABLE MARGIN</dt>
+        <dd className="tabular">{formatUsd(account.availableMargin)}</dd>
       </div>
       <div>
-        <dt>POSITION VALUE</dt>
-        <dd className="tabular">{formatUsd(account.positionValue)}</dd>
+        <dt>MARGIN USED</dt>
+        <dd className="tabular">{formatUsd(account.marginUsed)}</dd>
+      </div>
+      <div>
+        <dt>GROSS EXPOSURE</dt>
+        <dd className="tabular">{formatUsd(account.grossExposure)}</dd>
       </div>
       <div>
         <dt>REALIZED P&amp;L</dt>

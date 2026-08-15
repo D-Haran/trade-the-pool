@@ -7,17 +7,18 @@ timestamp, balance, P&L value, or trigger decision.
 
 ## Source responsibilities
 
-| Internal responsibility                                                             | Live source                              | Notes                                                                                            |
-| ----------------------------------------------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| Exchange last price, 24h statistics, historical/realtime OHLC, Level-2 book, trades | Kraken WebSocket v2 and public OHLC REST | The visible book is venue-specific and is never presented as consolidated.                       |
-| Independent comparison                                                              | Coinbase Advanced Trade public ticker    | Used only for integrity/deviation checks; it does not silently become execution authority.       |
-| `AUTHORITATIVE_MARK`                                                                | Pyth Hermes price stream                 | Requires a server-side API key and explicitly configured BTC/USD, ETH/USD, and SOL/USD feed IDs. |
-| Test and local fake mode                                                            | `DeterministicMarketPriceSource`         | Network-free, exact, controllable fixtures; never an implicit fallback from live mode.           |
+| Internal responsibility                                                             | Live source                              | Notes                                                                                         |
+| ----------------------------------------------------------------------------------- | ---------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Exchange last price, 24h statistics, historical/realtime OHLC, Level-2 book, trades | Kraken WebSocket v2 and public OHLC REST | The visible book is venue-specific and is never presented as consolidated.                    |
+| Independent comparison                                                              | Coinbase Advanced Trade public ticker    | Used only for integrity/deviation checks; it does not silently become execution authority.    |
+| `AUTHORITATIVE_MARK`                                                                | Pyth Hermes price stream                 | Requires a server-side API key and an explicitly configured feed ID for every enabled market. |
+| Test and local fake mode                                                            | `DeterministicMarketPriceSource`         | Network-free, exact, controllable fixtures; never an implicit fallback from live mode.        |
 
-Canonical application symbols are `BTC-USD`, `ETH-USD`, and `SOL-USD`. Kraken, Coinbase, and Pyth
-identifiers are translated only inside the provider package. The upstream connections are shared
-per API process rather than created per browser. Raw ticks remain bounded in process memory and are
-not written to PostgreSQL.
+The canonical registry contains BTC, ETH, SOL, XRP, DOGE, LINK, AVAX, ADA, SUI, AAVE, NEAR, and
+LTC against USD. The registry owns display metadata, precision, provider mappings, enablement,
+ordering, and leverage caps. Kraken, Coinbase, and Pyth identifiers are translated only inside the
+provider package. Upstream connections are shared per API process rather than created per browser.
+Raw ticks remain bounded in process memory and are not written to PostgreSQL.
 
 ## Processing flow
 
@@ -135,6 +136,7 @@ PYTH_API_KEY=...
 PYTH_FEED_ID_BTC_USD=...
 PYTH_FEED_ID_ETH_USD=...
 PYTH_FEED_ID_SOL_USD=...
+# ...one PYTH_FEED_ID_<ASSET>_USD for every enabled registry market
 ```
 
 The provider URLs and freshness/deviation thresholds are listed in `.env.example`. API keys and

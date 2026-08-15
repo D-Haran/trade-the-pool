@@ -1,5 +1,6 @@
 'use client';
 
+import { SUPPORTED_MARKET_SYMBOLS } from '@trade-the-pool/shared';
 import type {
   ApiEnvelope,
   EntryDetailDto,
@@ -13,7 +14,7 @@ import type {
 import { AlertTriangle } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiClientError } from '@/lib/api-client';
 import { formatPrice, formatQuantity, formatUsd } from '@/lib/format';
 import { queryKeys } from '@/lib/query-keys';
@@ -26,19 +27,23 @@ import { ErrorState, LoadingState } from './ui/states';
 import { useToast } from './ui/toast';
 import { ChartWorkspace } from './terminal/chart-workspace';
 import { MarketHeader } from './terminal/market-header';
+import { MarketActivityStrip } from './terminal/market-activity-strip';
 import { MarketDepthPanel } from './terminal/market-depth';
 import { OrderTicket } from './terminal/order-ticket';
 import { TerminalPanels } from './terminal/terminal-panels';
 import { AccountStrip, TournamentStatus } from './terminal/tournament-status';
 
-const symbols: MarketSymbolDto[] = ['BTC-USD', 'ETH-USD', 'SOL-USD'];
+const symbols: MarketSymbolDto[] = [...SUPPORTED_MARKET_SYMBOLS];
 
 function orderError(error: unknown): string {
   if (!(error instanceof ApiClientError)) return 'The order could not be completed.';
   const messages: Record<string, string> = {
-    INSUFFICIENT_CASH: 'Insufficient simulated buying power for this 1x order and fee.',
+    INSUFFICIENT_CASH: 'Insufficient simulated cash for this order and fee.',
+    INSUFFICIENT_MARGIN: 'Insufficient simulated margin or gross exposure capacity.',
     INSUFFICIENT_POSITION: 'The position no longer has enough quantity for this close.',
     POSITION_SIDE_CONFLICT: 'Close the existing position before opening the opposite side.',
+    POSITION_LEVERAGE_CONFLICT: 'Close the position before changing leverage for this market.',
+    ENTRY_BUSTED: 'This tournament entry is busted and can no longer open positions.',
     STALE_MARKET_PRICE: 'Market data is stale. Trading is temporarily disabled.',
     TOURNAMENT_NOT_TRADABLE: 'Tournament trading has closed.',
     TRADING_NOT_STARTED: 'Tournament trading has not started.',
@@ -93,12 +98,10 @@ function Terminal({ slug, entryId }: { slug: string; entryId: string }) {
     enabled: Boolean(tournamentId),
     retry: false,
   });
-  const marketQueries = useQueries({
-    queries: symbols.map((marketSymbol) => ({
-      queryKey: queryKeys.market(marketSymbol),
-      queryFn: () => api.market(marketSymbol),
-      refetchInterval: 15_000,
-    })),
+  const markets = useQuery({
+    queryKey: queryKeys.markets,
+    queryFn: () => api.markets(),
+    refetchInterval: 15_000,
   });
   const positions = useQuery({
     queryKey: queryKeys.positions(entryId),
@@ -133,11 +136,9 @@ function Terminal({ slug, entryId }: { slug: string; entryId: string }) {
   const marketMap = useMemo(
     () =>
       Object.fromEntries(
-        marketQueries.flatMap((query, index) =>
-          query.data ? [[symbols[index], query.data.data] as const] : [],
-        ),
+        (markets.data?.data ?? []).map((market) => [market.symbol, market] as const),
       ) as Partial<Record<MarketSymbolDto, MarketSnapshotDto>>,
-    [marketQueries.map((query) => query.data?.data.marketTimestamp).join('|')],
+    [markets.data?.data],
   );
   const activeMarket = marketMap[symbol];
 
@@ -156,29 +157,36 @@ function Terminal({ slug, entryId }: { slug: string; entryId: string }) {
 
   const handleEvent = (event: RealtimeEvent) => {
     if (event.type === 'market.price')
-      queryClient.setQueryData<ApiEnvelope<MarketSnapshotDto>>(
-        queryKeys.market(event.symbol),
-        (current) =>
-          current
-            ? {
-                data: {
-                  ...current.data,
-                  price: event.price,
-                  markPrice: event.markPrice,
-                  marketTimestamp: event.marketTimestamp,
-                  markTimestamp: event.markTimestamp,
-                  source: event.source,
-                  markSource: event.markSource,
-                  status: event.status,
-                  exchangeStatus: event.exchangeStatus,
-                },
-              }
-            : current,
+      queryClient.setQueryData<ApiEnvelope<MarketSnapshotDto[]>>(queryKeys.markets, (current) =>
+        current
+          ? {
+              data: current.data.map((market) =>
+                market.symbol === event.symbol
+                  ? {
+                      ...market,
+                      price: event.price,
+                      markPrice: event.markPrice,
+                      marketTimestamp: event.marketTimestamp,
+                      markTimestamp: event.markTimestamp,
+                      source: event.source,
+                      markSource: event.markSource,
+                      status: event.status,
+                      exchangeStatus: event.exchangeStatus,
+                    }
+                  : market,
+              ),
+            }
+          : current,
       );
     if (event.type === 'market.status')
-      queryClient.setQueryData<ApiEnvelope<MarketSnapshotDto>>(
-        queryKeys.market(event.symbol),
-        (current) => (current ? { data: { ...current.data, status: event.status } } : current),
+      queryClient.setQueryData<ApiEnvelope<MarketSnapshotDto[]>>(queryKeys.markets, (current) =>
+        current
+          ? {
+              data: current.data.map((market) =>
+                market.symbol === event.symbol ? { ...market, status: event.status } : market,
+              ),
+            }
+          : current,
       );
     if (event.type === 'entry.account_updated' && event.entryId === entryId) {
       queryClient.setQueryData<ApiEnvelope<EntryDetailDto>>(queryKeys.entry(entryId), (current) =>
@@ -225,7 +233,7 @@ function Terminal({ slug, entryId }: { slug: string; entryId: string }) {
   );
   const connection = useRealtime(topics, handleEvent, () => {
     void invalidateTradingState();
-    void queryClient.invalidateQueries({ queryKey: queryKeys.market(symbol) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.markets });
     void queryClient.invalidateQueries({ queryKey: queryKeys.book(symbol) });
     void queryClient.invalidateQueries({ queryKey: queryKeys.marketTrades(symbol) });
     void queryClient.invalidateQueries({ queryKey: queryKeys.tournament(slug) });
@@ -327,7 +335,7 @@ function Terminal({ slug, entryId }: { slug: string; entryId: string }) {
   }
 
   const account = entry.data.data;
-  const marketError = marketQueries[symbols.indexOf(symbol)]?.isError ?? false;
+  const marketError = markets.isError;
   const stale =
     !activeMarket ||
     ['STALE', 'RECONNECTING', 'UNAVAILABLE', 'DEGRADED'].includes(activeMarket.status);
@@ -345,21 +353,24 @@ function Terminal({ slug, entryId }: { slug: string; entryId: string }) {
     stale ||
     connection !== 'CONNECTED' ||
     deadlinePassed ||
+    account.isBusted ||
     !tournament.data ||
     !isTradable(tournament.data.data.status);
   const disabledReason = restUnavailable
     ? 'Trading service unavailable.'
-    : stale
-      ? activeMarket?.status === 'DEGRADED'
-        ? 'Authoritative pricing disagrees with healthy comparison feeds. New orders are paused.'
-        : 'Authoritative market data is stale. Waiting for a trusted update.'
-      : connection !== 'CONNECTED'
-        ? 'Realtime state is reconnecting. Orders are paused for safety.'
-        : deadlinePassed || (tournament.data && !isTradable(tournament.data.data.status))
-          ? 'Tournament trading has closed.'
-          : switching
-            ? 'Switching active entry…'
-            : null;
+    : account.isBusted
+      ? 'ENTRY BUSTED. Trading is disabled; history and final standing remain available.'
+      : stale
+        ? activeMarket?.status === 'DEGRADED'
+          ? 'Authoritative pricing disagrees with healthy comparison feeds. New orders are paused.'
+          : 'Authoritative market data is stale. Waiting for a trusted update.'
+        : connection !== 'CONNECTED'
+          ? 'Realtime state is reconnecting. Orders are paused for safety.'
+          : deadlinePassed || (tournament.data && !isTradable(tournament.data.data.status))
+            ? 'Tournament trading has closed.'
+            : switching
+              ? 'Switching active entry…'
+              : null;
 
   const selectMarket = (next: MarketSymbolDto) => {
     setSymbol(next);
@@ -399,12 +410,12 @@ function Terminal({ slug, entryId }: { slug: string; entryId: string }) {
         onSelect={selectMarket}
         freshness={freshness}
       />
-      <div
-        className={cn(
-          'professional-terminal-grid',
-          depthCollapsed && 'is-depth-collapsed',
-        )}
-      >
+      <MarketActivityStrip
+        markets={markets.data?.data ?? []}
+        activeSymbol={symbol}
+        onSelect={selectMarket}
+      />
+      <div className={cn('professional-terminal-grid', depthCollapsed && 'is-depth-collapsed')}>
         <ChartWorkspace symbol={symbol} position={activePosition} />
         <MarketDepthPanel
           symbol={symbol}

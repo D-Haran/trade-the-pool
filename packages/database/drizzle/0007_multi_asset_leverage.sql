@@ -1,0 +1,11 @@
+-- Curated multi-asset universe and fixed-precision simulated margin accounting.
+ALTER TYPE "trading_symbol" ADD VALUE IF NOT EXISTS 'XRP-USD';
+ALTER TYPE "trading_symbol" ADD VALUE IF NOT EXISTS 'DOGE-USD';
+ALTER TYPE "trading_symbol" ADD VALUE IF NOT EXISTS 'LINK-USD';
+ALTER TYPE "trading_symbol" ADD VALUE IF NOT EXISTS 'AVAX-USD';
+ALTER TYPE "trading_symbol" ADD VALUE IF NOT EXISTS 'ADA-USD';
+ALTER TYPE "trading_symbol" ADD VALUE IF NOT EXISTS 'SUI-USD';
+ALTER TYPE "trading_symbol" ADD VALUE IF NOT EXISTS 'AAVE-USD';
+ALTER TYPE "trading_symbol" ADD VALUE IF NOT EXISTS 'NEAR-USD';
+ALTER TYPE "trading_symbol" ADD VALUE IF NOT EXISTS 'LTC-USD';
+ALTER TYPE "order_type" ADD VALUE IF NOT EXISTS 'LIQUIDATION';

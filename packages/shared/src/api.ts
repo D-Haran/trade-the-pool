@@ -1,10 +1,11 @@
 import { z } from 'zod';
+import { SUPPORTED_MARKET_SYMBOLS } from './markets.js';
 
 export const uuidSchema = z.string().uuid();
 export const moneyStringSchema = z.string().regex(/^\d+(?:\.\d{1,2})?$/);
 export const signedMoneyStringSchema = z.string().regex(/^-?\d+(?:\.\d{1,2})?$/);
 export const decimalStringSchema = z.string().regex(/^\d+(?:\.\d{1,8})?$/);
-export const marketSymbolSchema = z.enum(['BTC-USD', 'ETH-USD', 'SOL-USD']);
+export const marketSymbolSchema = z.enum(SUPPORTED_MARKET_SYMBOLS);
 export const tournamentStatusSchema = z.enum([
   'DRAFT',
   'REGISTRATION_OPEN',
@@ -65,6 +66,7 @@ export const professionalOrderRequestSchema = z.discriminatedUnion('intent', [
       intent: z.literal('OPEN'),
       positionSide: positionSideSchema,
       notional: moneyStringSchema,
+      leverage: z.number().int().min(1).max(5),
       execution: orderExecutionSchema,
       ...optionalProtection,
     })
@@ -336,13 +338,18 @@ export type EntrySummaryDto = {
   startingBankroll: string;
   cash: string;
   availableBuyingPower: string;
+  availableMargin: string;
+  marginUsed: string;
   positionValue: string;
+  grossExposure: string;
   realizedPnL: string;
   unrealizedPnL: string;
   equity: string;
   score: string;
   percentageReturn: string;
   rank: number | null;
+  isBusted: boolean;
+  bustedAt: string | null;
   createdAt: string;
   tournament: TournamentSummaryDto;
 };
@@ -352,10 +359,14 @@ export type EntryDetailDto = EntrySummaryDto;
 export type PositionDto = {
   symbol: MarketSymbolDto;
   side: 'LONG' | 'SHORT';
+  leverage: number;
   quantity: string;
   averageEntryPrice: string;
   currentMark: string | null;
   marketValue: string;
+  notional: string;
+  marginUsed: string;
+  liquidationPrice: string | null;
   realizedPnL: string;
   unrealizedPnL: string;
   percentageReturn: string;
@@ -370,7 +381,8 @@ export type OrderHistoryDto = {
   side: 'BUY' | 'SELL';
   positionSide: 'LONG' | 'SHORT';
   intent: 'OPEN' | 'CLOSE';
-  orderType: 'MARKET' | 'LIMIT' | 'STOP_MARKET' | 'TAKE_PROFIT' | 'STOP_LOSS';
+  orderType: 'MARKET' | 'LIMIT' | 'STOP_MARKET' | 'TAKE_PROFIT' | 'STOP_LOSS' | 'LIQUIDATION';
+  leverage: number;
   requestedNotional: string | null;
   requestedQuantity: string | null;
   requestedPercentageBps: number | null;
@@ -391,6 +403,7 @@ export type OrderHistoryDto = {
     slippage: string;
     fee: string;
     realizedPnL: string;
+    leverage: number;
   };
 };
 
@@ -404,6 +417,7 @@ export type OrderResultDto = {
   positionSide: 'LONG' | 'SHORT';
   intent: 'OPEN' | 'CLOSE';
   orderType: 'MARKET' | 'LIMIT' | 'STOP_MARKET';
+  leverage: number;
   requestedNotional: string | null;
   quantity: string | null;
   referencePrice: string | null;
@@ -460,11 +474,16 @@ export type MarketSnapshotDto = {
   };
   metadata: {
     assetClass: 'CRYPTO';
-    baseCurrency: 'BTC' | 'ETH' | 'SOL';
+    displayName: string;
+    baseCurrency: string;
     quoteCurrency: 'USD';
     tradingSchedule: '24/7';
     pricePrecision: number;
     quantityPrecision: number;
+    iconKey: string;
+    accent: string;
+    maxLeverage: number;
+    sortOrder: number;
   };
 };
 
@@ -508,6 +527,7 @@ export type FillHistoryDto = NonNullable<OrderHistoryDto['fill']> & {
   positionSide: 'LONG' | 'SHORT';
   intent: 'OPEN' | 'CLOSE';
   realizedPnL: string;
+  leverage: number;
 };
 
 export type PerformanceDto = {

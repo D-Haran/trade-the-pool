@@ -18,7 +18,7 @@ const templates = [
   {
     slug: 'daily-pool',
     name: 'Daily Pool',
-    description: 'A concentrated daily BTC, ETH, and SOL paper-trading tournament.',
+    description: 'A concentrated daily multi-asset crypto paper-trading tournament.',
     baseBankroll: '1000.00',
     initialPrizePool: '500.00',
     tradingStarts: "now() - interval '30 minutes'",
@@ -28,7 +28,7 @@ const templates = [
   {
     slug: 'weekend-pool',
     name: 'Weekend Pool',
-    description: 'A larger, longer BTC, ETH, and SOL paper-trading tournament.',
+    description: 'A larger, longer multi-asset crypto paper-trading tournament.',
     baseBankroll: '2500.00',
     initialPrizePool: '4000.00',
     tradingStarts: "now() - interval '1 hour'",

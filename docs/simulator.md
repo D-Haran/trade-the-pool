@@ -40,13 +40,14 @@ time grow. Its sensitivities are configuration inputs rather than fixed product 
 
 ## Prices and trading
 
-Seeded fixed-point BTC/ETH/SOL paths support low-volatility trend, high-volatility trend,
-range/chop, reversal, and shock/event regimes. Stochastic return generation uses a seeded model;
-path prices and score settlement are fixed-point integers. Synthetic traders make long-only
-decisions against those paths, pay standardized trading costs, and share the same price/execution
-assumptions within a tournament. Ranking remains absolute dollar P&L.
+Seeded fixed-point paths cover every market in the canonical registry and support low-volatility
+trend, high-volatility trend, range/chop, reversal, and shock/event regimes. Stochastic return
+generation uses a seeded model; path prices and score settlement are fixed-point integers.
+Synthetic simulator traders still use its deliberately narrower long-only strategy model, pay
+standardized trading costs, and share the same price/execution assumptions within a tournament.
+Ranking remains absolute dollar P&L.
 
-`HistoricalPriceReplaySource` defines the future adapter for historical BTC/ETH/SOL paths. No
+`HistoricalPriceReplaySource` defines the future adapter for historical registry-market paths. No
 historical provider is bundled in this phase.
 
 ## Metrics and diagnostics

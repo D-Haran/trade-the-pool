@@ -7,6 +7,15 @@ const INITIAL: Record<MarketSymbol, Price> = {
   'BTC-USD': parsePrice('100000.00'),
   'ETH-USD': parsePrice('4000.00'),
   'SOL-USD': parsePrice('200.00'),
+  'XRP-USD': parsePrice('2.40'),
+  'DOGE-USD': parsePrice('0.22'),
+  'LINK-USD': parsePrice('18.00'),
+  'AVAX-USD': parsePrice('35.00'),
+  'ADA-USD': parsePrice('0.78'),
+  'SUI-USD': parsePrice('3.20'),
+  'AAVE-USD': parsePrice('280.00'),
+  'NEAR-USD': parsePrice('5.40'),
+  'LTC-USD': parsePrice('115.00'),
 };
 
 const PARAMETERS: Record<PriceRegime, { drift: number; volatility: number }> = {

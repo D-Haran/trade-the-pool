@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createDatabase } from '@trade-the-pool/database';
-import { DeterministicMarketPriceSource } from '@trade-the-pool/market-data';
+import { DeterministicMarketPriceSource, SUPPORTED_SYMBOLS } from '@trade-the-pool/market-data';
 import WebSocket from 'ws';
 import { buildApp } from './app.js';
 import { sessionKey } from './auth.js';
@@ -152,7 +152,7 @@ describe('V1 HTTP API', () => {
 
     const detail = await app.inject({ method: 'GET', url: `/v1/tournaments/${tournamentId}` });
     expect(detail.statusCode).toBe(200);
-    expect(detail.json().data.allowedSymbols).toEqual(['BTC-USD', 'ETH-USD', 'SOL-USD']);
+    expect(detail.json().data.allowedSymbols).toEqual(SUPPORTED_SYMBOLS);
     expect(detail.json().data.maxEntriesPerUser).toBe(3);
     expect(detail.json().data).toMatchObject({
       baseBankroll: '10000.00',
@@ -180,11 +180,9 @@ describe('V1 HTTP API', () => {
   it('provides authoritative market snapshots and deterministic candle history', async () => {
     const markets = await app.inject({ method: 'GET', url: '/v1/markets' });
     expect(markets.statusCode).toBe(200);
-    expect(markets.json().data.map((item: { symbol: string }) => item.symbol)).toEqual([
-      'BTC-USD',
-      'ETH-USD',
-      'SOL-USD',
-    ]);
+    expect(markets.json().data.map((item: { symbol: string }) => item.symbol)).toEqual(
+      SUPPORTED_SYMBOLS,
+    );
     const snapshot = await app.inject({ method: 'GET', url: '/v1/markets/BTC-USD' });
     expect(snapshot.statusCode).toBe(200);
     expect(snapshot.json().data).toMatchObject({
@@ -492,6 +490,7 @@ describe('V1 HTTP API', () => {
         intent: 'OPEN',
         positionSide: 'SHORT',
         notional: '500.00',
+        leverage: 1,
         execution: { type: 'MARKET' },
         takeProfitPrice: '3900.00',
         stopLossPrice: '4100.00',
@@ -541,6 +540,7 @@ describe('V1 HTTP API', () => {
         intent: 'OPEN',
         positionSide: 'LONG',
         notional: '500.00',
+        leverage: 1,
         execution: { type: 'LIMIT', limitPrice: '90000.00' },
       },
     });
@@ -592,7 +592,7 @@ describe('V1 HTTP API', () => {
       headers: { cookie, 'idempotency-key': 'too-much' },
       payload: { entryId, symbol: 'BTC-USD', side: 'BUY', notional: '10000.00' },
     });
-    expect(insufficient.json().error.code).toBe('INSUFFICIENT_CASH');
+    expect(insufficient.json().error.code).toBe('INSUFFICIENT_MARGIN');
 
     const oversell = await app.inject({
       method: 'POST',

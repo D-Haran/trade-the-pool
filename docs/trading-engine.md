@@ -1,10 +1,10 @@
-# Trading engine V1
+# Trading engine
 
-This package implements server-authoritative, 1x paper trading for `BTC-USD`, `ETH-USD`, and
-`SOL-USD`. It supports explicit long and simulated short positions without leverage,
-derivatives, borrowing, liquidation, or real assets. PostgreSQL is the durable source of truth.
-The in-memory market source is only an authoritative test/local price provider and is never an
-accounting store.
+This package implements server-authoritative paper trading for the canonical market registry. It
+supports explicit long and simulated short positions, asset-specific leverage from 1x to 5x, and
+deterministic liquidation without real assets or external exchange orders. PostgreSQL is the
+durable source of truth. The in-memory market source is only an authoritative test/local price
+provider and is never an accounting store.
 
 ## Precision and rounding
 
@@ -59,9 +59,11 @@ Authoritative equity is always:
 cash + long marked value - short marked liability
 ```
 
-Available 1x buying power is `equity - gross marked exposure`. Opening a short credits simulated
-sale proceeds and creates an equal marked liability; buying it back debits cash. This keeps the
-accounting auditable while preventing the credited proceeds from being reused as leverage.
+Opening a short credits simulated sale proceeds and creates an equal marked liability; buying it
+back debits cash. A leveraged long can therefore carry an explicit negative simulated financing
+cash balance. Equity is still cash plus long assets minus short liabilities, so leverage changes
+capital efficiency rather than multiplying P&L. Margin, pending-order reservations, the 5x gross
+exposure ceiling, and liquidation are described in [`margin-risk.md`](margin-risk.md).
 
 The entry's cached cash/P&L/equity columns are updated inside each order transaction.
 `reconcileEntry` independently sums the ledger for expected cash, replays fills in execution
@@ -109,12 +111,12 @@ remaining close siblings, giving attached protection OCO behavior. Open orders c
 explicitly and expire deterministically after tournament trading closes.
 
 Tournament settlement first locks the tournament into `TRADING_CLOSED` and expires open orders.
-It then obtains all three fresh execution-eligible marks before its final write transaction, which
+It then obtains one fresh execution-eligible mark for every enabled registry market before its final write transaction, which
 persists one immutable mark per symbol, freezes exact entry equity/P&L, and completes the
 tournament atomically. If a mark is not trustworthy, the closed retry state remains but account
 values do not change. Completed snapshots and leaderboards reuse the stored marks, and idempotent
 settlement replay does not need a live feed.
 
-There is no real money, blockchain, leverage above 1x, derivatives, liquidation, or external
+There is no real money, blockchain, leverage above 5x, derivative contract, funding, or external
 exchange order routing. Development market volume is unavailable and is returned as `null`, never
 fabricated.

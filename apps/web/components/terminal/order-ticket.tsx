@@ -1,5 +1,6 @@
 'use client';
 
+import { MARKET_REGISTRY, allowedLeverages } from '@trade-the-pool/shared';
 import type {
   EntryDetailDto,
   MarketSnapshotDto,
@@ -41,6 +42,7 @@ export function OrderTicket({
   const [positionSide, setPositionSide] = useState<PositionSide>('LONG');
   const [orderType, setOrderType] = useState<OrderType>('MARKET');
   const [notional, setNotional] = useState('500.00');
+  const [leverage, setLeverage] = useState(1);
   const [orderPrice, setOrderPrice] = useState('');
   const [riskOpen, setRiskOpen] = useState(false);
   const [takeProfitPrice, setTakeProfitPrice] = useState('');
@@ -50,10 +52,20 @@ export function OrderTicket({
   const { hotkeysEnabled, confirmationsEnabled, setHotkeysEnabled, setConfirmationsEnabled } =
     useTerminalStore();
 
-  const buyingPower = Number(account.availableBuyingPower);
+  const availableMargin = Number(account.availableMargin);
+  const buyingPower = Math.max(0, availableMargin * leverage);
   const estimatedFee = validPositive(notional, 2) ? Number(notional) * 0.001 : 0;
+  const estimatedMargin = validPositive(notional, 2) ? Number(notional) / leverage : 0;
+  const mark = Number(market?.markPrice ?? market?.price ?? '0');
+  const estimatedLiquidation =
+    mark > 0
+      ? positionSide === 'LONG'
+        ? Math.max(0, mark * (1 - 0.8 / leverage))
+        : mark * (1 + 0.8 / leverage)
+      : null;
   const invalid =
     !validPositive(notional, 2) ||
+    estimatedMargin + estimatedFee > availableMargin ||
     (orderType !== 'MARKET' && !validPositive(orderPrice, 8)) ||
     (takeProfitPrice.length > 0 && !validPositive(takeProfitPrice, 8)) ||
     (stopLossPrice.length > 0 && !validPositive(stopLossPrice, 8));
@@ -84,6 +96,7 @@ export function OrderTicket({
     setRiskOpen(false);
     setTakeProfitPrice('');
     setStopLossPrice('');
+    setLeverage((current) => Math.min(current, MARKET_REGISTRY[symbol].maxLeverage));
   }, [symbol, account.id]);
 
   const submit = () => {
@@ -104,6 +117,7 @@ export function OrderTicket({
       intent: 'OPEN',
       positionSide,
       notional,
+      leverage,
       execution,
       ...(takeProfitPrice ? { takeProfitPrice } : {}),
       ...(stopLossPrice ? { stopLossPrice } : {}),
@@ -173,6 +187,27 @@ export function OrderTicket({
             {type === 'STOP_MARKET' ? 'Stop' : type[0] + type.slice(1).toLowerCase()}
           </button>
         ))}
+      </div>
+
+      <div className="leverage-control">
+        <div>
+          <span>LEVERAGE</span>
+          <small>Market cap {MARKET_REGISTRY[symbol].maxLeverage}x</small>
+        </div>
+        <div role="group" aria-label="Leverage">
+          {allowedLeverages(symbol).map((value) => (
+            <button
+              key={value}
+              className={value === leverage ? 'is-active' : ''}
+              onClick={() => {
+                setLeverage(value);
+                setConfirming(false);
+              }}
+            >
+              {value}x
+            </button>
+          ))}
+        </div>
       </div>
 
       <label className="terminal-field">
@@ -259,8 +294,24 @@ export function OrderTicket({
           <dd className="tabular">~{formatUsd(estimatedFee.toFixed(2))}</dd>
         </div>
         <div>
-          <dt>Buying power</dt>
-          <dd className="tabular">{formatUsd(account.availableBuyingPower)}</dd>
+          <dt>Initial margin</dt>
+          <dd className="tabular">~{formatUsd(estimatedMargin.toFixed(2))}</dd>
+        </div>
+        <div>
+          <dt>Available margin</dt>
+          <dd className="tabular">{formatUsd(account.availableMargin)}</dd>
+        </div>
+        <div>
+          <dt>{leverage}x order capacity</dt>
+          <dd className="tabular">{formatUsd(buyingPower.toFixed(2))}</dd>
+        </div>
+        <div>
+          <dt>Est. liquidation</dt>
+          <dd className="tabular">
+            {estimatedLiquidation && leverage > 1
+              ? `~${formatPrice(estimatedLiquidation.toFixed(8))}`
+              : '—'}
+          </dd>
         </div>
       </dl>
 

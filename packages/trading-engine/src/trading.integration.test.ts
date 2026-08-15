@@ -236,7 +236,7 @@ describe('atomic PostgreSQL market execution', () => {
           market,
           {
             entryId,
-            symbol: 'DOGE-USD',
+            symbol: 'PEPE-USD',
             side: 'BUY',
             requestedNotional: '1.00',
             idempotencyKey: 'unsupported',

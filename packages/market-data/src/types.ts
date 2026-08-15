@@ -1,7 +1,14 @@
-import type { Price, Quantity } from '@trade-the-pool/shared';
+import {
+  MARKET_REGISTRY,
+  SUPPORTED_MARKET_SYMBOLS,
+  type CanonicalMarketMetadata,
+  type MarketSymbol,
+  type Price,
+  type Quantity,
+} from '@trade-the-pool/shared';
 
-export const SUPPORTED_SYMBOLS = ['BTC-USD', 'ETH-USD', 'SOL-USD'] as const;
-export type MarketSymbol = (typeof SUPPORTED_SYMBOLS)[number];
+export const SUPPORTED_SYMBOLS = SUPPORTED_MARKET_SYMBOLS;
+export type { MarketSymbol } from '@trade-the-pool/shared';
 
 export type MarketFreshnessStatus =
   'LIVE' | 'DELAYED' | 'STALE' | 'RECONNECTING' | 'UNAVAILABLE' | 'DEGRADED';
@@ -23,63 +30,47 @@ export type AssetClass = 'CRYPTO';
 export type MarketStatus = 'OPEN' | 'HALTED';
 export type MarketMetadata = {
   symbol: MarketSymbol;
-  baseCurrency: 'BTC' | 'ETH' | 'SOL';
+  displayName: string;
+  baseCurrency: string;
   quoteCurrency: 'USD';
   assetClass: AssetClass;
   tradingSchedule: '24/7';
   pricePrecision: number;
   quantityPrecision: number;
   status: MarketStatus;
+  enabled: true;
+  iconKey: string;
+  accent: string;
+  maxLeverage: CanonicalMarketMetadata['maxLeverage'];
+  sortOrder: number;
   providerSymbols: { kraken: string; coinbase: string; pythFeedEnvironmentKey: string };
 };
 
-export const MARKET_METADATA: Readonly<Record<MarketSymbol, MarketMetadata>> = {
-  'BTC-USD': {
-    symbol: 'BTC-USD',
-    baseCurrency: 'BTC',
-    quoteCurrency: 'USD',
-    assetClass: 'CRYPTO',
-    tradingSchedule: '24/7',
-    pricePrecision: 2,
-    quantityPrecision: 8,
-    status: 'OPEN',
-    providerSymbols: {
-      kraken: 'BTC/USD',
-      coinbase: 'BTC-USD',
-      pythFeedEnvironmentKey: 'PYTH_FEED_ID_BTC_USD',
-    },
-  },
-  'ETH-USD': {
-    symbol: 'ETH-USD',
-    baseCurrency: 'ETH',
-    quoteCurrency: 'USD',
-    assetClass: 'CRYPTO',
-    tradingSchedule: '24/7',
-    pricePrecision: 2,
-    quantityPrecision: 8,
-    status: 'OPEN',
-    providerSymbols: {
-      kraken: 'ETH/USD',
-      coinbase: 'ETH-USD',
-      pythFeedEnvironmentKey: 'PYTH_FEED_ID_ETH_USD',
-    },
-  },
-  'SOL-USD': {
-    symbol: 'SOL-USD',
-    baseCurrency: 'SOL',
-    quoteCurrency: 'USD',
-    assetClass: 'CRYPTO',
-    tradingSchedule: '24/7',
-    pricePrecision: 2,
-    quantityPrecision: 8,
-    status: 'OPEN',
-    providerSymbols: {
-      kraken: 'SOL/USD',
-      coinbase: 'SOL-USD',
-      pythFeedEnvironmentKey: 'PYTH_FEED_ID_SOL_USD',
-    },
-  },
-};
+export const MARKET_METADATA: Readonly<Record<MarketSymbol, MarketMetadata>> = Object.fromEntries(
+  SUPPORTED_SYMBOLS.map((symbol) => {
+    const metadata = MARKET_REGISTRY[symbol];
+    return [
+      symbol,
+      {
+        symbol,
+        displayName: metadata.displayName,
+        baseCurrency: metadata.baseAsset,
+        quoteCurrency: metadata.quoteAsset,
+        assetClass: metadata.assetClass,
+        tradingSchedule: metadata.schedule,
+        pricePrecision: metadata.pricePrecision,
+        quantityPrecision: metadata.quantityPrecision,
+        status: 'OPEN',
+        enabled: metadata.enabled,
+        iconKey: metadata.iconKey,
+        accent: metadata.accent,
+        maxLeverage: metadata.maxLeverage,
+        sortOrder: metadata.sortOrder,
+        providerSymbols: metadata.providerSymbols,
+      },
+    ];
+  }),
+) as Record<MarketSymbol, MarketMetadata>;
 
 export function canonicalSymbol(
   provider: 'kraken' | 'coinbase',

@@ -511,11 +511,13 @@ export function pythIntegerToPrice(value: string, exponent: number): Price {
 
 export function parsePythUpdates(
   payload: unknown,
-  feedIds: Record<MarketSymbol, string>,
+  feedIds: Partial<Record<MarketSymbol, string>>,
   receivedAt = new Date(),
 ): MarketPriceSnapshot[] {
   const inverse = new Map(
-    Object.entries(feedIds).map(([symbol, id]) => [id.replace(/^0x/, '').toLowerCase(), symbol]),
+    Object.entries(feedIds).flatMap(([symbol, id]) =>
+      id ? [[id.replace(/^0x/, '').toLowerCase(), symbol] as const] : [],
+    ),
   );
   const parsed = records(record(payload)?.parsed);
   return parsed.flatMap((item) => {
@@ -556,25 +558,29 @@ export class PythHermesAdapter implements UpstreamMarketDataAdapter {
   readonly name = 'pyth-hermes';
   readonly #listeners = new Set<(event: UpstreamEvent) => void>();
   #health = baseHealth(this.name);
-  #controller: AbortController | null = null;
+  readonly #controllers = new Map<MarketSymbol, AbortController>();
+  readonly #attempts = new Map<MarketSymbol, number>();
+  readonly #timers = new Map<MarketSymbol, NodeJS.Timeout>();
+  readonly #connected = new Set<MarketSymbol>();
+  readonly #errors = new Map<MarketSymbol, string>();
   #stopped = true;
-  #attempt = 0;
-  #timer: NodeJS.Timeout | null = null;
 
   constructor(private readonly options: PythAdapterOptions) {}
 
   start(): void {
     if (!this.#stopped) return;
     this.#stopped = false;
-    void this.connect();
+    for (const symbol of SUPPORTED_SYMBOLS) void this.connect(symbol);
   }
 
   close(): void {
     this.#stopped = true;
-    if (this.#timer) clearTimeout(this.#timer);
-    this.#timer = null;
-    this.#controller?.abort();
-    this.#controller = null;
+    for (const timer of this.#timers.values()) clearTimeout(timer);
+    this.#timers.clear();
+    for (const controller of this.#controllers.values()) controller.abort();
+    this.#controllers.clear();
+    this.#connected.clear();
+    this.#errors.clear();
     this.setConnection('DISCONNECTED');
   }
 
@@ -597,13 +603,21 @@ export class PythHermesAdapter implements UpstreamMarketDataAdapter {
     this.emit({ type: 'health', health: this.getHealth() });
   }
 
-  private async connect(): Promise<void> {
-    this.setConnection(this.#attempt ? 'RECONNECTING' : 'CONNECTING');
+  private refreshConnection(): void {
+    const errors = [...this.#errors.entries()]
+      .map(([symbol, error]) => `${symbol}: ${error}`)
+      .join('; ');
+    this.setConnection(
+      this.#connected.size ? 'CONNECTED' : this.#attempts.size ? 'RECONNECTING' : 'CONNECTING',
+      errors || null,
+    );
+  }
+
+  private async connect(symbol: MarketSymbol): Promise<void> {
+    this.refreshConnection();
     const controller = new AbortController();
-    this.#controller = controller;
-    const query = SUPPORTED_SYMBOLS.map(
-      (symbol) => `ids[]=${encodeURIComponent(this.options.feedIds[symbol])}`,
-    ).join('&');
+    this.#controllers.set(symbol, controller);
+    const query = `ids[]=${encodeURIComponent(this.options.feedIds[symbol])}`;
     try {
       const response = await fetch(
         `${this.options.hermesUrl.replace(/\/$/, '')}/v2/updates/price/stream?parsed=true&${query}`,
@@ -615,10 +629,17 @@ export class PythHermesAdapter implements UpstreamMarketDataAdapter {
           signal: controller.signal,
         },
       );
-      if (!response.ok || !response.body)
-        throw new Error(`Pyth Hermes stream failed with ${response.status}`);
-      this.#attempt = 0;
-      this.setConnection('CONNECTED');
+      if (!response.ok || !response.body) {
+        throw new Error(
+          response.status === 403
+            ? 'Pyth Hermes stream is not entitled for this symbol'
+            : `Pyth Hermes stream failed with ${response.status}`,
+        );
+      }
+      this.#attempts.set(symbol, 0);
+      this.#errors.delete(symbol);
+      this.#connected.add(symbol);
+      this.refreshConnection();
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
@@ -641,11 +662,9 @@ export class PythHermesAdapter implements UpstreamMarketDataAdapter {
           if (data) {
             const receivedAt = new Date();
             this.#health.lastMessageAt = receivedAt;
-            for (const snapshot of parsePythUpdates(
-              JSON.parse(data),
-              this.options.feedIds,
-              receivedAt,
-            )) {
+            for (const snapshot of parsePythUpdates(JSON.parse(data), {
+              [symbol]: this.options.feedIds[symbol],
+            }, receivedAt)) {
               this.#health.lastValidPriceAt = receivedAt;
               this.emit({ type: 'price', role: 'AUTHORITATIVE', snapshot });
             }
@@ -656,17 +675,24 @@ export class PythHermesAdapter implements UpstreamMarketDataAdapter {
       if (!this.#stopped) throw new Error('Pyth Hermes stream ended');
     } catch (error) {
       if (this.#stopped || (error instanceof Error && error.name === 'AbortError')) return;
+      this.#connected.delete(symbol);
       this.#health.reconnectCount += 1;
-      this.setConnection(
-        'RECONNECTING',
+      this.#errors.set(
+        symbol,
         error instanceof Error ? error.message : 'Pyth Hermes connection failed',
       );
-      const delay = boundedBackoffMs(this.#attempt++);
-      this.#timer = setTimeout(() => {
-        this.#timer = null;
-        void this.connect();
+      this.refreshConnection();
+      const attempt = this.#attempts.get(symbol) ?? 0;
+      this.#attempts.set(symbol, attempt + 1);
+      const delay = boundedBackoffMs(attempt);
+      const timer = setTimeout(() => {
+        this.#timers.delete(symbol);
+        void this.connect(symbol);
       }, delay);
-      this.#timer.unref();
+      this.#timers.set(symbol, timer);
+      timer.unref();
+    } finally {
+      if (this.#controllers.get(symbol) === controller) this.#controllers.delete(symbol);
     }
   }
 }

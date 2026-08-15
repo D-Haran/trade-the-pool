@@ -24,7 +24,6 @@ import {
   parsePrice,
   parseQuantity,
   parseSignedMoney,
-  priceQuantityToMoney,
   signedMoneyToString,
   uuidSchema,
   type RealtimeEvent,
@@ -37,6 +36,7 @@ import {
   nextEntryFeeTier,
   projectPayouts,
   processConditionalOrders,
+  processLiquidations,
   scheduledTournamentStatus,
   setPositionProtection,
   submitTradingOrder,
@@ -124,14 +124,11 @@ export class AccountSnapshotService {
       protections.set(row.symbol, current);
     }
     const score = moneyFromMinorUnits(
-      parseMoney(account.equity) - parseMoney(entry.startingBankroll),
+      parseSignedMoney(account.equity) - parseMoney(entry.startingBankroll),
     );
     const projectedPositions = account.positions.map((position) => {
       const quantity = parseQuantity(position.quantity);
-      const costBasis =
-        quantity === 0n
-          ? moneyFromMinorUnits(0n)
-          : priceQuantityToMoney(parsePrice(position.averageEntryPrice), quantity);
+      const costBasis = quantity === 0n ? moneyFromMinorUnits(0n) : parseMoney(position.marginUsed);
       const percentageHundredths =
         costBasis === 0n
           ? moneyFromMinorUnits(0n)
@@ -369,7 +366,7 @@ export class LeaderboardService {
     const exact = await Promise.all(
       entries.map(async ({ entry, displayName }) => {
         const snapshot = await this.snapshots.get(entry.id);
-        const score = parseMoney(snapshot.equity) - parseMoney(entry.startingBankroll);
+        const score = parseSignedMoney(snapshot.equity) - parseMoney(entry.startingBankroll);
         const percentageHundredths = divideRoundHalfUp(
           score * 10_000n,
           parseMoney(entry.startingBankroll),
@@ -557,7 +554,9 @@ export class TradingApiService {
   }
 
   async processMarketTick(symbol: MarketSymbol) {
-    const results = await processConditionalOrders(this.db, this.market, symbol);
+    const liquidations = await processLiquidations(this.db, this.market, symbol);
+    const conditional = await processConditionalOrders(this.db, this.market, symbol);
+    const results = [...liquidations, ...conditional];
     for (const result of results) {
       const [entry] = await this.db
         .select({ tournamentId: tournamentEntries.tournamentId })
@@ -656,7 +655,10 @@ export class EntryReadService {
           startingBankroll: entry.startingBankroll,
           cash: snapshot.cash,
           availableBuyingPower: snapshot.availableBuyingPower,
+          availableMargin: snapshot.availableMargin,
+          marginUsed: snapshot.marginUsed,
           positionValue: snapshot.positionValue,
+          grossExposure: snapshot.grossExposure,
           realizedPnL: snapshot.realizedPnL,
           unrealizedPnL: snapshot.unrealizedPnL,
           equity: snapshot.equity,
@@ -670,6 +672,8 @@ export class EntryReadService {
             ),
           ),
           rank: rankings.get(tournament.id)?.get(entry.id) ?? null,
+          isBusted: entry.isBusted,
+          bustedAt: entry.bustedAt,
           createdAt: entry.createdAt,
           tournament: {
             id: tournament.id,
@@ -743,7 +747,10 @@ export class EntryReadService {
       startingBankroll: row.entry.startingBankroll,
       cash: snapshot.cash,
       availableBuyingPower: snapshot.availableBuyingPower,
+      availableMargin: snapshot.availableMargin,
+      marginUsed: snapshot.marginUsed,
       positionValue: snapshot.positionValue,
+      grossExposure: snapshot.grossExposure,
       realizedPnL: snapshot.realizedPnL,
       unrealizedPnL: snapshot.unrealizedPnL,
       equity: snapshot.equity,
@@ -757,6 +764,8 @@ export class EntryReadService {
         ),
       ),
       rank: rank ?? null,
+      isBusted: row.entry.isBusted,
+      bustedAt: row.entry.bustedAt,
       createdAt: row.entry.createdAt,
     };
   }
@@ -787,6 +796,7 @@ export class EntryReadService {
         positionSide: order.positionSide,
         intent: order.intent,
         orderType: order.orderType,
+        leverage: order.leverage,
         requestedNotional: order.requestedNotional,
         requestedQuantity: order.requestedQuantity,
         requestedPercentageBps: order.requestedPercentageBps,
@@ -808,6 +818,7 @@ export class EntryReadService {
               slippage: fill.slippageAmount,
               fee: fill.feeAmount,
               realizedPnL: fill.realizedPnL,
+              leverage: fill.leverage,
             }
           : null,
       })),
@@ -837,6 +848,7 @@ export class EntryReadService {
         side: fill.side,
         positionSide: fill.positionSide,
         intent: fill.intent,
+        leverage: fill.leverage,
         referencePrice: fill.referencePrice,
         fillPrice: fill.fillPrice,
         quantity: fill.quantity,

@@ -15,7 +15,6 @@ import {
 } from '@trade-the-pool/market-data';
 import {
   moneyFromMinorUnits,
-  parseMoney,
   parsePrice,
   parseQuantity,
   parseSignedMoney,
@@ -312,7 +311,7 @@ export async function settleTournament(
         if (position.quantity > 0n)
           unrealized += unrealizedPnL(position, marks.get(position.symbol)!);
       }
-      const equity = accountEquity(parseMoney(entry.cash), exact, marks);
+      const equity = accountEquity(parseSignedMoney(entry.cash), exact, marks);
       await tx
         .update(tournamentEntries)
         .set({

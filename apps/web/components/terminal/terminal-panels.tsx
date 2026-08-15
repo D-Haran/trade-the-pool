@@ -22,6 +22,7 @@ import { formatPercent, formatPrice, formatQuantity, formatUsd, isPositive } fro
 import { useTerminalStore, type TerminalTab } from '@/lib/terminal-store';
 import { Leaderboard } from '../leaderboard';
 import { EmptyState, LoadingState } from '../ui/states';
+import { AssetIcon } from './asset-icon';
 
 const tabs: Array<{ key: TerminalTab; label: string; icon: typeof WalletCards }> = [
   { key: 'POSITIONS', label: 'Positions', icon: WalletCards },
@@ -94,33 +95,40 @@ function PositionsTable({
       <div className="terminal-table__head">
         <span>Symbol</span>
         <span>Side</span>
+        <span>Leverage</span>
         <span>Size</span>
-        <span>Avg Entry</span>
-        <span>Mark</span>
-        <span>Position Value</span>
-        <span>Unrealized P&amp;L</span>
-        <span>ROI</span>
+        <span>Notional</span>
+        <span>Entry / Mark</span>
+        <span>P&amp;L / ROI</span>
+        <span>Margin</span>
+        <span>Liq. Estimate</span>
         <span>TP / SL</span>
         <span>Actions</span>
       </div>
       {active.map((position) => (
         <div className="terminal-table__group" key={position.symbol}>
           <div className="terminal-table__row">
-            <strong>{position.symbol.replace('-', '/')}</strong>
+            <strong className="asset-table-cell">
+              <AssetIcon symbol={position.symbol} size={22} />
+              {position.symbol.replace('-', '/')}
+            </strong>
             <span className={`position-side position-side--${position.side.toLowerCase()}`}>
               {position.side}
             </span>
+            <strong className="tabular">{position.leverage}x</strong>
             <span className="tabular">{formatQuantity(position.quantity)}</span>
-            <span className="tabular">{formatPrice(position.averageEntryPrice)}</span>
-            <span className="tabular">
-              {position.currentMark ? formatPrice(position.currentMark) : '—'}
+            <span className="tabular">{formatUsd(position.notional)}</span>
+            <span className="stacked-number tabular">
+              <b>{formatPrice(position.averageEntryPrice)}</b>
+              <small>{position.currentMark ? formatPrice(position.currentMark) : '—'}</small>
             </span>
-            <span className="tabular">{formatUsd(position.marketValue)}</span>
-            <strong className={cn('tabular', outcomeClass(position.unrealizedPnL))}>
-              {formatUsd(position.unrealizedPnL, { signed: true })}
-            </strong>
-            <span className={cn('tabular', outcomeClass(position.percentageReturn))}>
-              {formatPercent(position.percentageReturn)}
+            <span className={cn('stacked-number tabular', outcomeClass(position.unrealizedPnL))}>
+              <b>{formatUsd(position.unrealizedPnL, { signed: true })}</b>
+              <small>{formatPercent(position.percentageReturn)}</small>
+            </span>
+            <span className="tabular">{formatUsd(position.marginUsed)}</span>
+            <span className="tabular">
+              {position.liquidationPrice ? formatPrice(position.liquidationPrice) : '—'}
             </span>
             <button className="protection-cell" onClick={() => setEditing(position.symbol)}>
               <ShieldCheck aria-hidden="true" />
@@ -202,9 +210,12 @@ function OrdersTable({
               minute: '2-digit',
             }).format(new Date(order.createdAt))}
           </span>
-          <strong>{order.symbol.replace('-', '/')}</strong>
+          <strong className="asset-table-cell">
+            <AssetIcon symbol={order.symbol} size={20} />
+            {order.symbol.replace('-', '/')}
+          </strong>
           <span className={`position-side position-side--${order.positionSide.toLowerCase()}`}>
-            {order.positionSide}
+            {order.positionSide} · {order.leverage}x
           </span>
           <span>{order.intent}</span>
           <span>{order.orderType.replace('_', ' ')}</span>
@@ -272,9 +283,14 @@ function TradesTable({ fills }: { fills: FillHistoryDto[] }) {
               minute: '2-digit',
             }).format(new Date(fill.timestamp))}
           </span>
-          <strong>{fill.symbol.replace('-', '/')}</strong>
+          <strong className="asset-table-cell">
+            <AssetIcon symbol={fill.symbol} size={20} />
+            {fill.symbol.replace('-', '/')}
+          </strong>
           <span>{fill.side}</span>
-          <span>{fill.positionSide}</span>
+          <span>
+            {fill.positionSide} · {fill.leverage}x
+          </span>
           <span>{fill.intent}</span>
           <span className="tabular">{formatQuantity(fill.quantity)}</span>
           <span className="tabular">{formatPrice(fill.referencePrice)}</span>

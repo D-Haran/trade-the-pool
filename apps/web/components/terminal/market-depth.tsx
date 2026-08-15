@@ -119,124 +119,124 @@ export function MarketDepthPanel({
         </button>
       ) : null}
       <div className="market-depth-content" aria-hidden={collapsed}>
-      <div className="market-depth-tabs">
-        <button className={tab === 'BOOK' ? 'is-active' : ''} onClick={() => setTab('BOOK')}>
-          ORDER BOOK
-        </button>
-        <button className={tab === 'TRADES' ? 'is-active' : ''} onClick={() => setTab('TRADES')}>
-          TRADES
-        </button>
-        <button
-          className="market-depth-collapse"
-          onClick={onToggle}
-          aria-label="Collapse order book"
-          title="Collapse order book"
-        >
-          <ChevronRight aria-hidden="true" />
-        </button>
-      </div>
-      <div className="market-depth-provenance">
-        <span>
-          {tab === 'BOOK' ? 'Market depth' : 'Trade tape'} ·{' '}
-          {tab === 'BOOK'
-            ? (orderBook?.venue ?? 'Unavailable')
-            : (trades.data?.data[0]?.venue ?? (simulated ? 'Deterministic' : 'Kraken'))}
-        </span>
-        <b
-          className={cn(
-            tab === 'BOOK' && orderBook?.status === 'LIVE' && 'positive',
-            tab === 'BOOK' && orderBook?.status && orderBook.status !== 'LIVE' && 'warning',
-          )}
-        >
-          {tab === 'BOOK'
-            ? simulated
-              ? 'SIMULATED'
-              : (orderBook?.status ?? 'UNAVAILABLE')
-            : `${trades.data?.data.length ?? 0} PRINTS`}
-        </b>
-      </div>
-      {tab === 'BOOK' ? (
-        <div
-          className="depth-book"
-          aria-label={`${symbol} ${orderBook?.venue ?? 'market'} order book`}
-        >
-          <div className="depth-head">
-            <span>PRICE</span>
-            <span>SIZE</span>
-            <span>TOTAL</span>
-          </div>
-          {book.isError ? (
-            <p className="market-depth-message">Market depth is temporarily unavailable.</p>
-          ) : !orderBook ? (
-            <p className="market-depth-message">Loading market depth…</p>
-          ) : orderBook.status !== 'LIVE' && !orderBook.asks.length ? (
-            <p className="market-depth-message">Market depth is resynchronizing…</p>
-          ) : (
-            <>
-              <div className="depth-side depth-side--asks">
-                {asks.map((level) => (
-                  <div className="depth-row" key={`ask-${level.price}`}>
-                    <i style={{ width: percentageWidth(level.total, maximumTotal) }} />
-                    <span className="negative">{formatPrice(level.price)}</span>
-                    <span>{formatQuantity(level.quantity)}</span>
-                    <span>{formatQuantity(level.total)}</span>
-                  </div>
-                ))}
-              </div>
-              <div className="depth-spread">
-                <strong className="tabular">
-                  {orderBook.spread ? formatPrice(orderBook.spread) : '—'}
-                </strong>
-                <span>{spreadPercent}</span>
-              </div>
-              <div className="depth-side depth-side--bids">
-                {bids.map((level) => (
-                  <div className="depth-row" key={`bid-${level.price}`}>
-                    <i style={{ width: percentageWidth(level.total, maximumTotal) }} />
-                    <span className="positive">{formatPrice(level.price)}</span>
-                    <span>{formatQuantity(level.quantity)}</span>
-                    <span>{formatQuantity(level.total)}</span>
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
+        <div className="market-depth-tabs">
+          <button className={tab === 'BOOK' ? 'is-active' : ''} onClick={() => setTab('BOOK')}>
+            ORDER BOOK
+          </button>
+          <button className={tab === 'TRADES' ? 'is-active' : ''} onClick={() => setTab('TRADES')}>
+            TRADES
+          </button>
+          <button
+            className="market-depth-collapse"
+            onClick={onToggle}
+            aria-label="Collapse order book"
+            title="Collapse order book"
+          >
+            <ChevronRight aria-hidden="true" />
+          </button>
         </div>
-      ) : (
-        <div className="trade-tape" aria-label={`${symbol} recent market trades`}>
-          <div className="depth-head">
-            <span>PRICE</span>
-            <span>SIZE</span>
-            <span>TIME</span>
-          </div>
-          {trades.isError ? (
-            <p className="market-depth-message">Recent trades are temporarily unavailable.</p>
-          ) : !trades.data?.data.length ? (
-            <p className="market-depth-message">Waiting for exchange trades…</p>
-          ) : (
-            trades.data.data.slice(0, 50).map((trade) => (
-              <div className="trade-tape-row" key={`${trade.venue}-${trade.id}`}>
-                <span
-                  className={
-                    trade.side === 'BUY' ? 'positive' : trade.side === 'SELL' ? 'negative' : ''
-                  }
-                >
-                  {formatPrice(trade.price)}
-                </span>
-                <span>{formatQuantity(trade.quantity)}</span>
-                <span>
-                  {new Intl.DateTimeFormat('en-US', {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                    second: '2-digit',
-                    hour12: false,
-                  }).format(new Date(trade.timestamp))}
-                </span>
-              </div>
-            ))
-          )}
+        <div className="market-depth-provenance">
+          <span>
+            {tab === 'BOOK' ? 'Market depth' : 'Trade tape'} ·{' '}
+            {tab === 'BOOK'
+              ? (orderBook?.venue ?? 'Unavailable')
+              : (trades.data?.data[0]?.venue ?? (simulated ? 'Deterministic' : 'Kraken'))}
+          </span>
+          <b
+            className={cn(
+              tab === 'BOOK' && orderBook?.status === 'LIVE' && 'positive',
+              tab === 'BOOK' && orderBook?.status && orderBook.status !== 'LIVE' && 'warning',
+            )}
+          >
+            {tab === 'BOOK'
+              ? simulated
+                ? 'SIMULATED'
+                : (orderBook?.status ?? 'UNAVAILABLE')
+              : `${trades.data?.data.length ?? 0} PRINTS`}
+          </b>
         </div>
-      )}
+        {tab === 'BOOK' ? (
+          <div
+            className="depth-book"
+            aria-label={`${symbol} ${orderBook?.venue ?? 'market'} order book`}
+          >
+            <div className="depth-head">
+              <span>PRICE</span>
+              <span>SIZE</span>
+              <span>TOTAL</span>
+            </div>
+            {book.isError ? (
+              <p className="market-depth-message">Market depth is temporarily unavailable.</p>
+            ) : !orderBook ? (
+              <p className="market-depth-message">Loading market depth…</p>
+            ) : orderBook.status !== 'LIVE' && !orderBook.asks.length ? (
+              <p className="market-depth-message">Market depth is resynchronizing…</p>
+            ) : (
+              <>
+                <div className="depth-side depth-side--asks">
+                  {asks.map((level) => (
+                    <div className="depth-row" key={`ask-${level.price}`}>
+                      <i style={{ width: percentageWidth(level.total, maximumTotal) }} />
+                      <span className="negative">{formatPrice(level.price)}</span>
+                      <span>{formatQuantity(level.quantity)}</span>
+                      <span>{formatQuantity(level.total)}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="depth-spread">
+                  <strong className="tabular">
+                    {orderBook.spread ? formatPrice(orderBook.spread) : '—'}
+                  </strong>
+                  <span>{spreadPercent}</span>
+                </div>
+                <div className="depth-side depth-side--bids">
+                  {bids.map((level) => (
+                    <div className="depth-row" key={`bid-${level.price}`}>
+                      <i style={{ width: percentageWidth(level.total, maximumTotal) }} />
+                      <span className="positive">{formatPrice(level.price)}</span>
+                      <span>{formatQuantity(level.quantity)}</span>
+                      <span>{formatQuantity(level.total)}</span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        ) : (
+          <div className="trade-tape" aria-label={`${symbol} recent market trades`}>
+            <div className="depth-head">
+              <span>PRICE</span>
+              <span>SIZE</span>
+              <span>TIME</span>
+            </div>
+            {trades.isError ? (
+              <p className="market-depth-message">Recent trades are temporarily unavailable.</p>
+            ) : !trades.data?.data.length ? (
+              <p className="market-depth-message">Waiting for exchange trades…</p>
+            ) : (
+              trades.data.data.slice(0, 50).map((trade) => (
+                <div className="trade-tape-row" key={`${trade.venue}-${trade.id}`}>
+                  <span
+                    className={
+                      trade.side === 'BUY' ? 'positive' : trade.side === 'SELL' ? 'negative' : ''
+                    }
+                  >
+                    {formatPrice(trade.price)}
+                  </span>
+                  <span>{formatQuantity(trade.quantity)}</span>
+                  <span>
+                    {new Intl.DateTimeFormat('en-US', {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                      second: '2-digit',
+                      hour12: false,
+                    }).format(new Date(trade.timestamp))}
+                  </span>
+                </div>
+              ))
+            )}
+          </div>
+        )}
       </div>
     </aside>
   );

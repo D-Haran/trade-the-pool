@@ -31,10 +31,11 @@ pnpm simulate --runs 10000 --players 120 --seed 42
 Run the PostgreSQL integration suite with `pnpm test:integration`. It applies the idempotent domain migration first and defaults to `postgres://trade_the_pool:trade_the_pool@localhost:5432/trade_the_pool`; set `DATABASE_URL` to use another database. Fixtures use unique IDs and are cleaned up after each test.
 
 The paper-trading engine's precision, fill, accounting, locking, idempotency, and reconciliation models are documented in [`docs/trading-engine.md`](docs/trading-engine.md).
-The trading terminal supports authoritative 1x paper longs/shorts, market/limit/stop orders,
+The trading terminal supports authoritative paper longs/shorts across a curated 12-market crypto
+universe, asset-specific simulated leverage up to 5x, market/limit/stop orders, liquidation,
 take-profit/stop-loss exits, exact performance history, multi-timeframe charts, and responsive
-desktop/mobile workflows. It does not introduce real money, blockchain settlement, leverage, or
-derivatives.
+desktop/mobile workflows. It does not introduce real money, blockchain settlement, derivatives,
+funding, or exchange routing. See [`docs/margin-risk.md`](docs/margin-risk.md).
 The deterministic economics simulator, population assumptions, arrival models, price regimes, and
 fairness diagnostics are documented in [`docs/simulator.md`](docs/simulator.md).
 The first 10,000-run baseline and its imbalance findings are in
@@ -67,10 +68,10 @@ pnpm --filter @trade-the-pool/api dev
 
 The web app runs on `http://localhost:3000`; the API health endpoint is `http://localhost:4000/health`.
 
-Development and CI use `MARKET_DATA_MODE=fake` by default. To use genuine public BTC/USD,
-ETH/USD, and SOL/USD data locally, set `MARKET_DATA_MODE=live`, provide a server-side
-`PYTH_API_KEY` plus all three current Pyth feed IDs, then start the same API/web processes. Live
-configuration is validated at startup and never falls back to deterministic prices. See
+Development and CI use `MARKET_DATA_MODE=fake` by default. To use genuine public data locally,
+set `MARKET_DATA_MODE=live`, provide a server-side `PYTH_API_KEY` plus a current feed ID for every
+enabled registry market, then start the same API/web processes. Live configuration is validated at
+startup and never falls back to deterministic prices. See
 [`docs/market-data.md`](docs/market-data.md) and [`.env.example`](.env.example).
 
 ## Validation

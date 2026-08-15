@@ -16,7 +16,15 @@ export function TournamentCard({ tournament }: { tournament: TournamentDto }) {
       </div>
       <div className="tournament-card__name">
         <h3>{tournament.name}</h3>
-        <span>{tournament.allowedSymbols.map((symbol) => symbol.split('-')[0]).join(' · ')}</span>
+        <span>
+          {tournament.allowedSymbols
+            .slice(0, 5)
+            .map((symbol) => symbol.split('-')[0])
+            .join(' · ')}
+          {tournament.allowedSymbols.length > 5
+            ? ` · +${tournament.allowedSymbols.length - 5}`
+            : ''}
+        </span>
       </div>
       <div className="tournament-card__pool">
         <span>Prize pool</span>
