@@ -56,11 +56,38 @@ export function TournamentStatus({
   const projectedPrize = tournament?.payoutProjection.prizes.find(
     (prize) => prize.position === account.rank,
   )?.amount;
+  const firstScore = leaderboard?.data.find((row) => row.rank === 1)?.score;
   const podiumScore = leaderboard?.data.find((row) => row.rank === 3)?.score;
   const podiumGap = podiumScore ? subtractMoney(podiumScore, account.score) : null;
   const cashLine = tournament?.payoutProjection.cashLinePosition ?? 0;
   const cashLineScore = leaderboard?.data.find((row) => row.rank === cashLine)?.score;
   const cashGap = cashLineScore ? subtractMoney(cashLineScore, account.score) : null;
+  const firstGap = firstScore ? subtractMoney(firstScore, account.score) : null;
+  const competitiveTarget = (() => {
+    if (account.rank === 1) return { label: '1ST PLACE', value: 'LEADING' };
+    if (account.rank === 2)
+      return {
+        label: 'TO 1ST PLACE',
+        value: firstGap && !firstGap.startsWith('-') ? formatUsd(firstGap, { signed: true }) : '—',
+      };
+    if (account.rank === 3) return { label: 'ON THE PODIUM', value: '3RD PLACE' };
+    return {
+      label: 'TO 3RD PLACE',
+      value: podiumGap && !podiumGap.startsWith('-') ? formatUsd(podiumGap, { signed: true }) : '—',
+    };
+  })();
+  const payoutStatus = projectedPrize
+    ? { label: 'CURRENT PAYOUT', value: formatUsd(projectedPrize), detail: 'IN THE MONEY' }
+    : cashLine
+      ? {
+          label: cashGap && !cashGap.startsWith('-') ? 'TO CASH' : 'PAYOUT STATUS',
+          value:
+            cashGap && !cashGap.startsWith('-')
+              ? formatUsd(cashGap, { signed: true })
+              : `TOP ${cashLine} PAID`,
+          detail: cashGap && !cashGap.startsWith('-') ? `TOP ${cashLine} PAID` : undefined,
+        }
+      : { label: 'PAYOUT STATUS', value: '—', detail: undefined };
   return (
     <div className="terminal-tournament-bar">
       <div className="terminal-entry-switcher">
@@ -88,6 +115,22 @@ export function TournamentStatus({
         </label>
       </div>
       <dl className="tournament-metrics">
+        <div className="tournament-bankroll-metric">
+          <dt>CURRENT BANKROLL</dt>
+          <dd className="tabular">{formatUsd(account.equity)}</dd>
+        </div>
+        <div className="tournament-pnl-metric">
+          <dt>TOURNAMENT P&amp;L</dt>
+          <dd
+            className={cn(
+              'tabular',
+              account.score.startsWith('-') ? 'negative' : isPositive(account.score) && 'positive',
+            )}
+          >
+            <strong>{formatUsd(account.score, { signed: true })}</strong>
+            <small>{formatPercent(account.percentageReturn)}</small>
+          </dd>
+        </div>
         <div>
           <dt>RANK</dt>
           <dd className={cn('tabular rank-feedback', rankDelta && 'is-changing')}>
@@ -100,43 +143,16 @@ export function TournamentStatus({
             ) : null}
           </dd>
         </div>
-        <div className="tournament-pnl-metric">
-          <dt>TOTAL P&amp;L</dt>
-          <dd
-            className={cn(
-              'tabular',
-              account.score.startsWith('-') ? 'negative' : isPositive(account.score) && 'positive',
-            )}
-          >
-            <strong>{formatUsd(account.score, { signed: true })}</strong>
-            <small>{formatPercent(account.percentageReturn)}</small>
-          </dd>
-        </div>
         <div>
-          <dt>PROJECTED PRIZE</dt>
-          <dd className="tabular">{projectedPrize ? formatUsd(projectedPrize) : '—'}</dd>
-        </div>
-        <div>
-          <dt>PODIUM GAP</dt>
+          <dt>{payoutStatus.label}</dt>
           <dd className="tabular">
-            {podiumGap && !podiumGap.startsWith('-')
-              ? formatUsd(podiumGap, { signed: true })
-              : account.rank && account.rank <= 3
-                ? 'IN PODIUM'
-                : '—'}
+            {payoutStatus.value}
+            {payoutStatus.detail ? <small>{payoutStatus.detail}</small> : null}
           </dd>
         </div>
         <div>
-          <dt>CASH LINE</dt>
-          <dd className="tabular">
-            {cashLine
-              ? account.rank && account.rank <= cashLine
-                ? `#${cashLine} · IN CASH`
-                : cashGap && !cashGap.startsWith('-')
-                  ? `${formatUsd(cashGap, { signed: true })} TO CASH`
-                  : `#${cashLine}`
-              : '—'}
-          </dd>
+          <dt>{competitiveTarget.label}</dt>
+          <dd className="tabular">{competitiveTarget.value}</dd>
         </div>
       </dl>
       <div className="terminal-close-time">
@@ -157,8 +173,8 @@ export function AccountStrip({
 }) {
   return (
     <dl className="terminal-account-strip">
-      <div className="account-metric account-metric--primary">
-        <dt>SIMULATED EQUITY</dt>
+      <div className="account-metric account-metric--hero">
+        <dt>CURRENT BANKROLL</dt>
         <dd className="tabular">{formatUsd(account.equity)}</dd>
       </div>
       {activePosition ? (

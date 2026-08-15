@@ -75,11 +75,11 @@ test.describe.serial('authoritative trading journey', () => {
     await page.goto(`/tournaments/${E2E.slug}`);
     await expect(page.getByText('Prize pool', { exact: true }).first()).toBeVisible();
     await expect(page.getByText('$0.00').first()).toBeVisible();
-    await expect(page.getByText('Base bankroll', { exact: true }).first()).toBeVisible();
     await expect(page.getByText('Enter now with', { exact: true })).toBeVisible();
-    await expect(page.getByText('Entry now', { exact: true }).first()).toBeVisible();
+    await expect(page.getByText('You enter with', { exact: true })).toBeVisible();
+    await expect(page.getByText('Entry fee', { exact: true }).first()).toBeVisible();
     await expect(page.locator('.entry-panel')).toContainText('$30.00');
-    await expect(page.locator('.payout-grid')).toContainText('1st Prize');
+    await expect(page.locator('.payout-grid')).toContainText('1st');
     await expect(page.locator('.payout-grid')).toContainText('$0.00');
     await page.getByRole('button', { name: 'Create entry' }).click();
     await expect(page.getByText('Entry #1 created')).toBeVisible();
@@ -136,8 +136,9 @@ test.describe.serial('authoritative trading journey', () => {
     await expect(page.locator('.terminal-table--positions')).toContainText('5x');
     await expect(page.locator('.terminal-table--positions')).toContainText('Liq. Estimate');
     await expect(page.locator('.account-metric--position')).toContainText('ETH/USD · LONG · 5x');
-    await expect(page.locator('.tournament-pnl-metric')).toContainText('TOTAL P&L');
-    await expect(page.getByText('TOTAL P&L', { exact: true })).toHaveCount(1);
+    await expect(page.locator('.tournament-pnl-metric')).toContainText('TOURNAMENT P&L');
+    await expect(page.getByText('TOURNAMENT P&L', { exact: true })).toHaveCount(1);
+    await expect(page.locator('.tournament-bankroll-metric')).toContainText('CURRENT BANKROLL');
     await expect(page.locator('.terminal-account-strip')).toContainText('ACCOUNT EXPOSURE');
     await expect(page.getByRole('tab', { name: 'ORDER' })).toBeVisible();
     await expect(page.getByRole('tab', { name: 'SELL' })).toBeVisible();
@@ -271,6 +272,9 @@ test.describe.serial('authoritative trading journey', () => {
 
   test('keeps multiple entries isolated during active-entry switching', async () => {
     await page.goto(`/tournaments/${E2E.slug}`);
+    await expect(page.locator('.owned-entry').first()).toContainText('Current bankroll');
+    await expect(page.locator('.owned-entry').first()).toContainText('P&L');
+    await expect(page.locator('.owned-entry').first()).toContainText('Rank');
     await page.getByRole('button', { name: 'Create entry' }).click();
     await expect(page.getByText('Entry #2 created')).toBeVisible();
     await expect(page.locator('.entry-confirmation')).toContainText('$10,025.00');
@@ -300,10 +304,11 @@ test.describe.serial('authoritative trading journey', () => {
     await expect(page.getByRole('combobox', { name: 'Active tournament entry' })).toHaveValue(
       firstEntryId,
     );
-    await expect(page.locator('.tournament-metrics')).toContainText('TOTAL P&L');
-    await expect(page.locator('.tournament-metrics')).toContainText('PROJECTED PRIZE');
-    await expect(page.locator('.tournament-metrics')).toContainText('PODIUM GAP');
-    await expect(page.locator('.tournament-metrics')).toContainText('CASH LINE');
+    await expect(page.locator('.tournament-metrics')).toContainText('TOURNAMENT P&L');
+    await expect(page.locator('.tournament-metrics')).toContainText('CURRENT BANKROLL');
+    await expect(page.locator('.tournament-metrics')).toContainText('CURRENT PAYOUT');
+    await expect(page.locator('.tournament-metrics')).not.toContainText('PODIUM GAP');
+    await expect(page.locator('.tournament-metrics')).not.toContainText('CASH LINE');
     await page.request.post(`${apiUrl}/v1/dev/market/advance`, {
       data: { symbol: 'SOL-USD', price: '220.00' },
     });
@@ -579,6 +584,9 @@ test.describe.serial('authoritative trading journey', () => {
       }
     }
     await page.setViewportSize({ width: 1440, height: 1000 });
+    const collapsedChartWidth = await page.evaluate(
+      () => document.querySelector('.chart-workspace')!.getBoundingClientRect().width,
+    );
     await page.getByRole('button', { name: 'Expand order book' }).click();
     await expect(page.getByRole('button', { name: 'Collapse order book' })).toBeVisible();
     await expect
@@ -590,8 +598,19 @@ test.describe.serial('authoritative trading journey', () => {
         }),
       )
       .toBe(true);
+    const expandedChartWidth = await page.evaluate(
+      () => document.querySelector('.chart-workspace')!.getBoundingClientRect().width,
+    );
+    expect(expandedChartWidth).toBeLessThan(collapsedChartWidth - 100);
     await page.getByRole('button', { name: 'Collapse order book' }).click();
     await expect(page.getByRole('button', { name: 'Expand order book' })).toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => document.querySelector('.chart-workspace')!.getBoundingClientRect().width,
+        ),
+      )
+      .toBeGreaterThanOrEqual(collapsedChartWidth - 2);
   });
 
   test('captures high-value desktop and mobile layouts', async ({ browserName }) => {

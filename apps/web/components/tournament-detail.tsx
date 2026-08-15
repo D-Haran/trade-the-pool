@@ -6,7 +6,8 @@ import Link from 'next/link';
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiClientError, type CreatedEntryDto } from '@/lib/api-client';
-import { formatDate, formatUsd } from '@/lib/format';
+import { cn } from '@/lib/cn';
+import { formatDate, formatUsd, isPositive } from '@/lib/format';
 import { queryKeys } from '@/lib/query-keys';
 import { statusLabel } from '@/lib/tournaments';
 import { useRealtime } from '@/hooks/use-realtime';
@@ -110,6 +111,10 @@ export function TournamentDetail({ slug }: { slug: string }) {
   const owned = entries.data?.data ?? [];
   const canEnter = item.eligibleToEnter === true && !create.isPending;
   const final = item.status === 'COMPLETED';
+  const payoutForRank = (rank: number | null) =>
+    rank
+      ? item.payoutProjection.prizes.find((prize) => prize.position === rank)?.amount
+      : undefined;
   return (
     <div className="detail-page">
       <section className="detail-hero content-width">
@@ -126,31 +131,28 @@ export function TournamentDetail({ slug }: { slug: string }) {
           </div>
         </div>
         <div className="pool-mechanic">
-          <div>
-            <span>Base bankroll</span>
-            <strong className="tabular">{formatUsd(item.baseBankroll)}</strong>
+          <div className="pool-mechanic__result">
+            <span>Enter now with</span>
+            <strong key={item.newEntryBankroll} className="tabular live-number">
+              {formatUsd(item.newEntryBankroll)}
+            </strong>
+            <small>
+              {formatUsd(item.baseBankroll)} base + {formatUsd(item.currentPrizePool)} prize pool
+            </small>
           </div>
-          <span className="pool-mechanic__operator" aria-hidden="true">
-            +
-          </span>
-          <div>
+          <div className="pool-mechanic__stat pool-mechanic__stat--prize">
             <span>Prize pool</span>
             <strong key={item.currentPrizePool} className="tabular live-number">
               {formatUsd(item.currentPrizePool)}
             </strong>
           </div>
-          <span className="pool-mechanic__operator" aria-hidden="true">
-            =
-          </span>
-          <div>
-            <span>Enter now with</span>
-            <strong key={item.newEntryBankroll} className="tabular live-number">
-              {formatUsd(item.newEntryBankroll)}
-            </strong>
+          <div className="pool-mechanic__stat">
+            <span>Entry fee</span>
+            <strong className="tabular">{formatUsd(item.currentEntryPrice)}</strong>
           </div>
           <p>
-            Simulated bankrolls lock when the server creates each entry. Future prize-pool growth
-            does not change them.
+            Your starting bankroll locks when the server creates the entry. Future prize-pool growth
+            does not change it.
           </p>
         </div>
       </section>
@@ -196,40 +198,59 @@ export function TournamentDetail({ slug }: { slug: string }) {
                 </small>
               </div>
               <div className="owned-entry-grid">
-                {owned.map((entry) => (
-                  <Link
-                    key={entry.id}
-                    href={`/tournaments/${item.slug}/trade/${entry.id}`}
-                    className="owned-entry"
-                  >
-                    <div>
-                      <strong>Entry #{entry.sequenceNumber}</strong>
-                      <ArrowRight aria-hidden="true" />
-                    </div>
-                    <span>
-                      Equity <b className="tabular">{formatUsd(entry.equity)}</b>
-                    </span>
-                    <span>
-                      Locked start <b className="tabular">{formatUsd(entry.startingBankroll)}</b>
-                    </span>
-                    <span>
-                      Entry price <b className="tabular">{formatUsd(entry.entryFee)}</b>
-                    </span>
-                    <span>
-                      P&amp;L{' '}
-                      <b
-                        className={
-                          entry.score.startsWith('-') ? 'negative tabular' : 'positive tabular'
-                        }
-                      >
-                        {formatUsd(entry.score, { signed: true })}
-                      </b>
-                    </span>
-                    <span>
-                      Rank <b className="tabular">{entry.rank ? `#${entry.rank}` : '—'}</b>
-                    </span>
-                  </Link>
-                ))}
+                {owned.map((entry) => {
+                  const payout = payoutForRank(entry.rank);
+                  return (
+                    <Link
+                      key={entry.id}
+                      href={`/tournaments/${item.slug}/trade/${entry.id}`}
+                      className="owned-entry"
+                    >
+                      <div className="owned-entry__head">
+                        <strong>Entry #{entry.sequenceNumber}</strong>
+                        <ArrowRight aria-hidden="true" />
+                      </div>
+                      <div className="owned-entry__bankroll">
+                        <span>Current bankroll</span>
+                        <strong className="tabular">{formatUsd(entry.equity)}</strong>
+                      </div>
+                      <div className="owned-entry__performance">
+                        <span>
+                          P&amp;L
+                          <b
+                            className={cn(
+                              'tabular',
+                              entry.score.startsWith('-')
+                                ? 'negative'
+                                : isPositive(entry.score) && 'positive',
+                            )}
+                          >
+                            {formatUsd(entry.score, { signed: true })}
+                          </b>
+                        </span>
+                        <span>
+                          Rank <b className="tabular">{entry.rank ? `#${entry.rank}` : '—'}</b>
+                        </span>
+                      </div>
+                      <div className="owned-entry__status">
+                        {payout ? (
+                          <>
+                            <span>Current payout</span>
+                            <b className="tabular">{formatUsd(payout)}</b>
+                          </>
+                        ) : entry.rank && entry.rank <= item.payoutProjection.cashLinePosition ? (
+                          <span>In the money</span>
+                        ) : (
+                          <span>Open terminal</span>
+                        )}
+                      </div>
+                      <small>
+                        Started with {formatUsd(entry.startingBankroll)} · Entry fee{' '}
+                        {formatUsd(entry.entryFee)}
+                      </small>
+                    </Link>
+                  );
+                })}
               </div>
             </section>
           ) : null}
@@ -239,27 +260,24 @@ export function TournamentDetail({ slug }: { slug: string }) {
                 <span>Projected distribution</span>
                 <h2>Prizes</h2>
               </div>
-              <small>
-                Cash line #{item.payoutProjection.cashLinePosition} ·{' '}
-                {(item.payoutProjection.paidEntriesPercentBasisPoints / 100).toFixed(0)}% paid
-              </small>
+              <small>Top {item.payoutProjection.cashLinePosition} get paid</small>
             </div>
             <div className="payout-grid">
               <div>
-                <span>1st Prize</span>
+                <span>1st</span>
                 <strong className="tabular">{formatUsd(item.payoutProjection.firstPrize)}</strong>
               </div>
               <div>
-                <span>2nd Prize</span>
+                <span>2nd</span>
                 <strong className="tabular">{formatUsd(item.payoutProjection.secondPrize)}</strong>
               </div>
               <div>
-                <span>3rd Prize</span>
+                <span>3rd</span>
                 <strong className="tabular">{formatUsd(item.payoutProjection.thirdPrize)}</strong>
               </div>
               <div>
-                <span>Cash Line</span>
-                <strong className="tabular">#{item.payoutProjection.cashLinePosition}</strong>
+                <span>Payout status</span>
+                <strong>Top {item.payoutProjection.cashLinePosition} paid</strong>
               </div>
             </div>
           </section>
@@ -316,25 +334,24 @@ export function TournamentDetail({ slug }: { slug: string }) {
             <span>Create entry</span>
             <UsersRound aria-hidden="true" />
           </div>
-          <div className="entry-panel__metric">
-            <span>Prize pool</span>
-            <strong key={item.currentPrizePool} className="tabular live-number">
-              {formatUsd(item.currentPrizePool)}
-            </strong>
-          </div>
-          <div className="entry-panel__row">
-            <span>Base bankroll</span>
-            <b className="tabular">{formatUsd(item.baseBankroll)}</b>
-          </div>
-          <div className="entry-panel__row entry-panel__row--emphasis">
-            <span>Your bankroll if you enter now</span>
-            <b key={item.newEntryBankroll} className="tabular live-number">
+          <div className="entry-panel__metric entry-panel__metric--hero">
+            <span>You enter with</span>
+            <strong key={item.newEntryBankroll} className="tabular live-number">
               {formatUsd(item.newEntryBankroll)}
-            </b>
+            </strong>
+            <small>
+              {formatUsd(item.baseBankroll)} base + {formatUsd(item.currentPrizePool)} prize pool
+            </small>
           </div>
           <div className="entry-panel__row">
-            <span>Entry now</span>
+            <span>Entry fee</span>
             <b className="tabular">{formatUsd(item.currentEntryPrice)}</b>
+          </div>
+          <div className="entry-panel__row">
+            <span>Prize pool</span>
+            <b key={item.currentPrizePool} className="tabular live-number">
+              {formatUsd(item.currentPrizePool)}
+            </b>
           </div>
           <div className="entry-panel__row">
             <span>Prize-pool contribution</span>
@@ -396,9 +413,8 @@ export function TournamentDetail({ slug }: { slug: string }) {
             </Button>
           )}
           <p className="entry-panel__note">
-            Your starting bankroll locks when this entry is created. Future pool growth does not
-            change it. Your contribution increases the prize pool for the next entry. The server
-            response is final.
+            Your starting bankroll locks when the entry is created. Future pool growth does not
+            change it.
           </p>
           {create.isError ? (
             <p className="form-error" role="alert">
