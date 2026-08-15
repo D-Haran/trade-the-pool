@@ -23,6 +23,7 @@ import { formatPrice } from '@/lib/format';
 import { queryKeys } from '@/lib/query-keys';
 import type { ChartType, IndicatorPreferences } from '@/lib/terminal-store';
 import { realtimeClient } from '@/lib/realtime-client';
+import { chartContainerSize } from '@/lib/chart-size';
 import {
   bollingerBands,
   chartCandle,
@@ -140,8 +141,11 @@ export function MarketChart({
 
   useEffect(() => {
     if (!container.current) return;
-    const apiChart = createChart(container.current, {
-      autoSize: true,
+    const chartContainer = container.current;
+    const initialSize = chartContainerSize(chartContainer);
+    const apiChart = createChart(chartContainer, {
+      autoSize: false,
+      ...(initialSize ?? {}),
       layout: {
         background: { type: ColorType.Solid, color: '#0a0d10' },
         textColor: '#68747f',
@@ -182,6 +186,13 @@ export function MarketChart({
           });
     chart.current = apiChart;
     mainSeries.current = primary;
+    const resizeChart = () => {
+      const size = chartContainerSize(chartContainer);
+      if (size) apiChart.applyOptions(size);
+    };
+    const resizeObserver = new ResizeObserver(resizeChart);
+    resizeObserver.observe(chartContainer);
+    resizeChart();
 
     const addOverlay = (key: string, color: string, width: 1 | 2 = 1) => {
       overlaySeries.current[key] = apiChart.addSeries(LineSeries, {
@@ -251,6 +262,7 @@ export function MarketChart({
     };
     apiChart.timeScale().subscribeVisibleLogicalRangeChange(logicalRangeHandler);
     return () => {
+      resizeObserver.disconnect();
       apiChart.unsubscribeCrosshairMove(crosshairHandler);
       apiChart.timeScale().unsubscribeVisibleLogicalRangeChange(logicalRangeHandler);
       apiChart.remove();

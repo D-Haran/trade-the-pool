@@ -414,6 +414,30 @@ export type PositionDto = {
   stopLossPrice: string | null;
 };
 
+export type ExecutionReasonDto =
+  | 'MANUAL_OPEN'
+  | 'MANUAL_CLOSE'
+  | 'LIMIT_TRIGGER'
+  | 'STOP_TRIGGER'
+  | 'TAKE_PROFIT'
+  | 'STOP_LOSS'
+  | 'LIQUIDATION'
+  | 'TOURNAMENT_SETTLEMENT';
+
+export type FillAuditDto = {
+  markUsed: string;
+  markProvider: string;
+  markSourceTimestamp: string;
+  markReceivedTimestamp: string;
+  comparisonPrice: string | null;
+  equityBefore: string;
+  equityAfter: string;
+  marginBefore: string;
+  marginAfter: string;
+  positionQuantityBefore: string;
+  positionQuantityAfter: string;
+};
+
 export type OrderHistoryDto = {
   id: string;
   status: 'PENDING' | 'OPEN' | 'TRIGGERED' | 'FILLED' | 'CANCELLED' | 'REJECTED' | 'EXPIRED';
@@ -422,6 +446,7 @@ export type OrderHistoryDto = {
   positionSide: 'LONG' | 'SHORT';
   intent: 'OPEN' | 'CLOSE';
   orderType: 'MARKET' | 'LIMIT' | 'STOP_MARKET' | 'TAKE_PROFIT' | 'STOP_LOSS' | 'LIQUIDATION';
+  executionReason: ExecutionReasonDto;
   leverage: number;
   requestedNotional: string | null;
   requestedQuantity: string | null;
@@ -444,6 +469,8 @@ export type OrderHistoryDto = {
     fee: string;
     realizedPnL: string;
     leverage: number;
+    executionReason: ExecutionReasonDto;
+    audit: FillAuditDto | null;
   };
 };
 
@@ -457,6 +484,7 @@ export type OrderResultDto = {
   positionSide: 'LONG' | 'SHORT';
   intent: 'OPEN' | 'CLOSE';
   orderType: 'MARKET' | 'LIMIT' | 'STOP_MARKET';
+  executionReason: ExecutionReasonDto;
   leverage: number;
   requestedNotional: string | null;
   quantity: string | null;
@@ -574,6 +602,7 @@ export type FillHistoryDto = NonNullable<OrderHistoryDto['fill']> & {
   side: 'BUY' | 'SELL';
   positionSide: 'LONG' | 'SHORT';
   intent: 'OPEN' | 'CLOSE';
+  executionReason: ExecutionReasonDto;
   realizedPnL: string;
   leverage: number;
 };

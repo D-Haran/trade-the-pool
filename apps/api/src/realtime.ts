@@ -274,7 +274,7 @@ export function connectMarketRealtime(
   onError: (error: unknown) => void = () => undefined,
 ): () => void {
   const unsubscribeEvents = market.subscribeMarketEvents?.((event) => {
-    if (event.type === 'provider') return;
+    if (event.type === 'provider' || event.type === 'mark-rejected') return;
     if (event.type === 'price') {
       const visible = event.view.exchangePrice ?? event.view.authoritativeMark;
       if (!visible) return;

@@ -40,6 +40,13 @@ Every fill records the reference/fill prices, both per-unit adjustments, exact q
 settled notional, fee, market source and timestamp, server timestamp, and per-entry execution
 sequence. The sequence makes deterministic replay independent of timestamp ties.
 
+Every new fill also creates a one-to-one durable `fill_audits` record in the same transaction. It
+captures the user/entry/order identity, position before and after, explicit execution reason,
+requested and filled quantity, leverage, entry basis, trusted and comparison marks with source and
+receive timestamps, simulated costs, realized/open P&L, equity before/after, margin before/after,
+and quantity before/after. Existing historical fills are not silently backfilled with invented
+facts.
+
 Fees are rounded to cents from fill notional. They are excluded from average entry price and
 gross realized P&L, but always reduce cash through a dedicated `TRADING_FEE` ledger record.
 Consequently equity includes all fee economics. API presentation may show gross realized P&L
@@ -90,6 +97,12 @@ share one PostgreSQL transaction.
 engine returns the stored order/fill for an identical replay. Reusing the key with different
 symbol, side, or request parameters raises `DUPLICATE_ORDER_CONFLICT`. Concurrent duplicates
 cannot execute cash or position mutations twice.
+
+Trigger evaluation and execution use the same validated snapshot. Before commit, the engine
+recomputes account equity and proves that the before/after delta equals the fill's mark-to-fill
+execution impact less its single fee. An unexplained transition raises
+`FINANCIAL_INVARIANT_VIOLATION` and rolls back the order, fill, position, ledger, audit, and cached
+account changes together.
 
 ## Order lifecycle and tradability
 

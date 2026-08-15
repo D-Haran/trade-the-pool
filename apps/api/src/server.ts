@@ -47,6 +47,20 @@ const market =
           bookStaleMs: config.MARKET_BOOK_STALE_MS,
           comparisonStaleMs: config.MARKET_COMPARISON_STALE_MS,
           maximumDeviationBasisPoints: config.MARKET_MAX_DEVIATION_BPS,
+          maximumJumpBasisPoints: {
+            'BTC-USD': config.MARKET_MAX_JUMP_BPS_TIER_1,
+            'ETH-USD': config.MARKET_MAX_JUMP_BPS_TIER_1,
+            'SOL-USD': config.MARKET_MAX_JUMP_BPS_TIER_2,
+            'XRP-USD': config.MARKET_MAX_JUMP_BPS_TIER_2,
+            'DOGE-USD': config.MARKET_MAX_JUMP_BPS_TIER_3,
+            'LINK-USD': config.MARKET_MAX_JUMP_BPS_TIER_2,
+            'AVAX-USD': config.MARKET_MAX_JUMP_BPS_TIER_2,
+            'ADA-USD': config.MARKET_MAX_JUMP_BPS_TIER_3,
+            'SUI-USD': config.MARKET_MAX_JUMP_BPS_TIER_3,
+            'AAVE-USD': config.MARKET_MAX_JUMP_BPS_TIER_3,
+            'NEAR-USD': config.MARKET_MAX_JUMP_BPS_TIER_3,
+            'LTC-USD': config.MARKET_MAX_JUMP_BPS_TIER_2,
+          },
         },
         subMinuteStore,
       })
@@ -92,13 +106,55 @@ disconnectMarket = connectMarketRealtime(
   market,
   hub,
   leaderboards,
-  (symbol) => trading.processMarketTick(symbol),
+  async (symbol) => {
+    const results = await trading.processMarketTick(symbol);
+    for (const result of results)
+      app.log.info(
+        {
+          entryId: result.order.entryId,
+          orderId: result.order.id,
+          fillId: result.fill?.id ?? null,
+          symbol: result.order.symbol,
+          positionSide: result.order.positionSide,
+          intent: result.order.intent,
+          executionReason: result.order.executionReason,
+          markUsed: result.fill?.referencePrice ?? null,
+          fillPrice: result.fill?.fillPrice ?? null,
+          realizedPnL: result.fill?.realizedPnL ?? null,
+        },
+        result.order.executionReason === 'LIQUIDATION'
+          ? 'position liquidated'
+          : 'automatic order executed',
+      );
+    return results;
+  },
   (error) => app.log.error({ err: error }, 'market projection refresh failed'),
 );
 if ('subscribeMarketEvents' in market) {
   const loggedStatuses = new Map<MarketSymbol, string>();
   const loggedProviderConnections = new Map<string, string>();
   disconnectMarketObservability = market.subscribeMarketEvents((event) => {
+    if (event.type === 'mark-rejected') {
+      app.log.error(
+        {
+          symbol: event.symbol,
+          reason: event.reason,
+          rejectedPrice: event.rejectedPrice.toString(),
+          trustedPrice: event.trustedPrice?.toString() ?? null,
+          comparisonPrices: event.comparisonPrices.map((comparison) => ({
+            source: comparison.source,
+            price: comparison.price.toString(),
+            marketTimestamp: comparison.marketTimestamp,
+          })),
+          deviationBasisPoints: event.deviationBasisPoints?.toString() ?? null,
+          jumpBasisPoints: event.jumpBasisPoints?.toString() ?? null,
+          marketTimestamp: event.marketTimestamp,
+          receivedAt: event.receivedAt,
+        },
+        'authoritative mark rejected; execution paused for market',
+      );
+      return;
+    }
     if (event.type === 'provider') {
       const prior = loggedProviderConnections.get(event.health.provider);
       if (prior === event.health.connection) return;

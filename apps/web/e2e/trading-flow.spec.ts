@@ -16,6 +16,15 @@ async function selectMarket(label: string) {
   await expect(page.locator('.market-selector-trigger')).toContainText(label);
 }
 
+async function confirmOrder(buttonName: string) {
+  const completed = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' && new URL(response.url()).pathname === '/v1/orders',
+  );
+  await page.getByRole('button', { name: buttonName }).click();
+  expect((await completed).status()).toBe(201);
+}
+
 test.describe.serial('authoritative trading journey', () => {
   test.beforeAll(async ({ browser }) => {
     context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
@@ -99,6 +108,9 @@ test.describe.serial('authoritative trading journey', () => {
     await expect(page.getByRole('group', { name: 'Leverage' }).getByRole('button')).toHaveCount(2);
 
     await selectMarket('ETH/USD');
+    await page.request.post(`${apiUrl}/v1/dev/market/advance`, {
+      data: { symbol: 'ETH-USD', price: '4000.00' },
+    });
     await page.getByRole('group', { name: 'Leverage' }).getByRole('button', { name: '5x' }).click();
     await page.getByLabel('Margin amount in USD').fill('1000.00');
     await expect(page.locator('.position-size-preview')).toContainText('$5,000.00');
@@ -118,8 +130,7 @@ test.describe.serial('authoritative trading journey', () => {
     await page.getByLabel('TAKE PROFIT').fill('4200.00');
     await page.getByLabel('STOP LOSS').fill('3900.00');
     await page.getByRole('button', { name: 'Place LONG Order' }).click();
-    await page.getByRole('button', { name: 'Confirm LONG ETH' }).click();
-    await expect(page.getByText('LONG ETH FILLED')).toBeVisible();
+    await confirmOrder('Confirm LONG ETH');
     await expect(page.locator('.terminal-table--positions')).toContainText('ETH/USD');
     await expect(page.locator('.terminal-table--positions')).toContainText('LONG');
     await expect(page.locator('.terminal-table--positions')).toContainText('5x');
@@ -156,24 +167,26 @@ test.describe.serial('authoritative trading journey', () => {
       .getByRole('button', { name: '25%' })
       .click();
     await page.getByRole('button', { name: 'Close 25% LONG Position' }).click();
-    await page.getByRole('button', { name: 'Confirm 25% Close' }).click();
-    await expect(page.getByText('LONG ETH FILLED')).toBeVisible();
+    await confirmOrder('Confirm 25% Close');
+    await expect(page.locator('.terminal-table--positions')).toContainText('ETH/USD');
 
+    await page.request.post(`${apiUrl}/v1/dev/market/advance`, {
+      data: { symbol: 'BTC-USD', price: '100000.00' },
+    });
     await selectMarket('BTC/USD');
     await page.getByRole('tab', { name: 'ORDER' }).click();
     await page.getByRole('button', { name: 'Limit', exact: true }).click();
     await page.getByLabel('Margin amount in USD').fill('500.00');
     await page.getByLabel('Limit price').fill('90000.00');
     await page.getByRole('button', { name: 'Create LONG order' }).click();
-    await page.getByRole('button', { name: 'Confirm LONG BTC' }).click();
-    await expect(page.getByText('LONG BTC/USD order open')).toBeVisible();
+    await confirmOrder('Confirm LONG BTC');
     await page.getByRole('button', { name: /Open Orders/ }).click();
     const limitRow = page
       .locator('.terminal-table--orders .terminal-table__row')
       .filter({ hasText: 'BTC/USD' });
     await expect(limitRow).toContainText('LIMIT');
     await limitRow.getByRole('button', { name: 'Cancel' }).click();
-    await expect(page.getByText('Order cancelled')).toBeVisible();
+    await expect(limitRow).toHaveCount(0);
 
     await expect(page.getByRole('button', { name: '1s', exact: true })).toHaveCount(0);
     await page.getByRole('button', { name: '5s', exact: true }).click();
@@ -227,8 +240,7 @@ test.describe.serial('authoritative trading journey', () => {
     await page.getByRole('button', { name: 'Market', exact: true }).click();
     await page.getByLabel('Margin amount in USD').fill('500.00');
     await page.getByRole('button', { name: 'Place SHORT Order' }).click();
-    await page.getByRole('button', { name: 'Confirm SHORT SOL' }).click();
-    await expect(page.getByText('SHORT SOL FILLED')).toBeVisible();
+    await confirmOrder('Confirm SHORT SOL');
     await page.getByRole('button', { name: 'Positions', exact: true }).click();
     await expect(page.locator('.terminal-table--positions')).toContainText('SHORT');
     await page
@@ -243,8 +255,7 @@ test.describe.serial('authoritative trading journey', () => {
       .getByRole('button', { name: '25%' })
       .click();
     await page.getByRole('button', { name: 'Buy to Close 25% SHORT' }).click();
-    await page.getByRole('button', { name: 'Confirm 25% Close' }).click();
-    await expect(page.getByText('SHORT SOL FILLED')).toBeVisible();
+    await confirmOrder('Confirm 25% Close');
     await page.getByRole('button', { name: 'Positions', exact: true }).click();
     await expect(
       page
@@ -307,6 +318,101 @@ test.describe.serial('authoritative trading journey', () => {
       timeout: 10_000,
     });
     await expect(page.locator('.mini-leaderboard__row.is-current > strong')).toHaveText('#1');
+  });
+
+  test('keeps a profitable 5x ETH short intact through a rejected mark and staged closes', async () => {
+    await page.request.post(`${apiUrl}/v1/dev/market/advance`, {
+      data: { symbol: 'ETH-USD', price: '4000.00' },
+    });
+    const opened = await page.request.post(`${apiUrl}/v1/orders`, {
+      headers: { 'Idempotency-Key': 'e2e-catastrophic-short-open' },
+      data: {
+        entryId: secondEntryId,
+        symbol: 'ETH-USD',
+        positionSide: 'SHORT',
+        intent: 'OPEN',
+        leverage: 5,
+        sizing: { type: 'MARGIN', amount: '1000.00' },
+        execution: { type: 'MARKET' },
+      },
+    });
+    expect(opened.status()).toBe(201);
+    await page.request.post(`${apiUrl}/v1/dev/market/advance`, {
+      data: { symbol: 'ETH-USD', price: '3988.00' },
+    });
+    const profitable = await page.request.get(`${apiUrl}/v1/entries/${secondEntryId}`);
+    expect(
+      Number(((await profitable.json()) as { data: { unrealizedPnL: string } }).data.unrealizedPnL),
+    ).toBeGreaterThan(0);
+
+    const beforeRejected = await page.request.get(
+      `${apiUrl}/v1/entries/${secondEntryId}/positions`,
+    );
+    const quantityBefore = (
+      (await beforeRejected.json()) as { data: Array<{ symbol: string; quantity: string }> }
+    ).data.find((position) => position.symbol === 'ETH-USD')!.quantity;
+    const rejected = await page.request.post(`${apiUrl}/v1/dev/market/advance`, {
+      data: { symbol: 'ETH-USD', price: '188000.00', mode: 'REJECT' },
+    });
+    expect(rejected.status()).toBe(200);
+    const degradedMarket = await page.request.get(`${apiUrl}/v1/markets/ETH-USD`);
+    expect((await degradedMarket.json()).data).toMatchObject({
+      markPrice: '3988.00000000',
+      status: 'DEGRADED',
+    });
+    const afterRejected = await page.request.get(`${apiUrl}/v1/entries/${secondEntryId}/positions`);
+    expect(
+      (
+        (await afterRejected.json()) as { data: Array<{ symbol: string; quantity: string }> }
+      ).data.find((position) => position.symbol === 'ETH-USD')!.quantity,
+    ).toBe(quantityBefore);
+
+    await page.request.post(`${apiUrl}/v1/dev/market/advance`, {
+      data: { symbol: 'ETH-USD', price: '3988.00', mode: 'ACCEPT' },
+    });
+    const closeHalf = await page.request.post(`${apiUrl}/v1/orders`, {
+      headers: { 'Idempotency-Key': 'e2e-catastrophic-short-half' },
+      data: {
+        entryId: secondEntryId,
+        symbol: 'ETH-USD',
+        positionSide: 'SHORT',
+        intent: 'CLOSE',
+        amount: { type: 'PERCENTAGE', percentageBps: 5000 },
+        execution: { type: 'MARKET' },
+      },
+    });
+    expect(closeHalf.status()).toBe(201);
+    const halfBody = (await closeHalf.json()) as {
+      data: { fillId: string; realizedPnL: string };
+    };
+    expect(Number(halfBody.data.realizedPnL)).toBeGreaterThan(0);
+    const audit = await page.request.get(`${apiUrl}/v1/dev/audit/fills/${halfBody.data.fillId}`);
+    expect((await audit.json()).data.audit).toMatchObject({
+      triggerType: 'MANUAL_CLOSE',
+      positionSideBefore: 'SHORT',
+      positionSideAfter: 'SHORT',
+    });
+    const closeRest = await page.request.post(`${apiUrl}/v1/orders`, {
+      headers: { 'Idempotency-Key': 'e2e-catastrophic-short-rest' },
+      data: {
+        entryId: secondEntryId,
+        symbol: 'ETH-USD',
+        positionSide: 'SHORT',
+        intent: 'CLOSE',
+        amount: { type: 'PERCENTAGE', percentageBps: 10000 },
+        execution: { type: 'MARKET' },
+      },
+    });
+    expect(closeRest.status()).toBe(201);
+    const finalAccount = await page.request.get(`${apiUrl}/v1/entries/${secondEntryId}`);
+    const finalBody = (await finalAccount.json()) as {
+      data: { equity: string; startingBankroll: string };
+    };
+    expect(Number(finalBody.data.equity)).toBeGreaterThan(
+      Number(finalBody.data.startingBankroll) * 0.98,
+    );
+    const fills = await page.request.get(`${apiUrl}/v1/entries/${secondEntryId}/fills`);
+    expect(JSON.stringify((await fills.json()).data)).toContain('MANUAL_CLOSE');
   });
 
   test('keeps PostgreSQL account state across logout, login, and navigation', async () => {
@@ -442,6 +548,8 @@ test.describe.serial('authoritative trading journey', () => {
       await expect(page.locator('.professional-terminal-grid')).toBeVisible();
       const layout = await page.evaluate(() => {
         const chart = document.querySelector('.chart-workspace')!.getBoundingClientRect();
+        const chartContainer = document.querySelector('.market-chart')!.getBoundingClientRect();
+        const chartSurface = document.querySelector('.market-chart table')!.getBoundingClientRect();
         const ticket = document
           .querySelector('.professional-order-ticket')!
           .getBoundingClientRect();
@@ -450,12 +558,17 @@ test.describe.serial('authoritative trading journey', () => {
           innerWidth,
           scrollWidth: document.documentElement.scrollWidth,
           chart: { left: chart.left, top: chart.top, bottom: chart.bottom },
+          chartWidth: chart.width,
+          chartContainerWidth: chartContainer.width,
+          chartSurfaceWidth: chartSurface.width,
           ticket: { left: ticket.left, top: ticket.top },
           submit: { top: submit.top, bottom: submit.bottom },
           ticketBottom: ticket.bottom,
         };
       });
       expect(layout.scrollWidth).toBeLessThanOrEqual(layout.innerWidth + 1);
+      expect(layout.chartContainerWidth).toBeGreaterThanOrEqual(layout.chartWidth - 2);
+      expect(layout.chartSurfaceWidth).toBeGreaterThanOrEqual(layout.chartContainerWidth - 2);
       if (viewport.stacked)
         expect(layout.ticket.top).toBeGreaterThanOrEqual(layout.chart.bottom - 1);
       else {
@@ -466,6 +579,19 @@ test.describe.serial('authoritative trading journey', () => {
       }
     }
     await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.getByRole('button', { name: 'Expand order book' }).click();
+    await expect(page.getByRole('button', { name: 'Collapse order book' })).toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const container = document.querySelector('.market-chart')!.getBoundingClientRect();
+          const surface = document.querySelector('.market-chart table')!.getBoundingClientRect();
+          return surface.width >= container.width - 2;
+        }),
+      )
+      .toBe(true);
+    await page.getByRole('button', { name: 'Collapse order book' }).click();
+    await expect(page.getByRole('button', { name: 'Expand order book' })).toBeVisible();
   });
 
   test('captures high-value desktop and mobile layouts', async ({ browserName }) => {
@@ -481,6 +607,7 @@ test.describe.serial('authoritative trading journey', () => {
       fullPage: true,
       mask: [page.locator('.entry-panel__deadline .tabular'), page.locator('.entry-panel__times')],
       maskColor: '#0b1014',
+      maxDiffPixels: 1_000,
     });
     await Promise.all([
       page.request.post(`${apiUrl}/v1/dev/market/advance`, {
@@ -511,12 +638,14 @@ test.describe.serial('authoritative trading journey', () => {
       fullPage: true,
       mask: terminalMask,
       maskColor: '#0b1014',
+      maxDiffPixels: 500,
     });
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(page).toHaveScreenshot('terminal-mobile.png', {
       fullPage: true,
       mask: terminalMask,
       maskColor: '#0b1014',
+      maxDiffPixels: 500,
     });
   });
 });

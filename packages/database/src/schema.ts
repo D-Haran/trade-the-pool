@@ -59,6 +59,16 @@ export const orderStatus = pgEnum('order_status', [
   'REJECTED',
   'EXPIRED',
 ]);
+export const executionReason = pgEnum('execution_reason', [
+  'MANUAL_OPEN',
+  'MANUAL_CLOSE',
+  'LIMIT_TRIGGER',
+  'STOP_TRIGGER',
+  'TAKE_PROFIT',
+  'STOP_LOSS',
+  'LIQUIDATION',
+  'TOURNAMENT_SETTLEMENT',
+]);
 export const ledgerEntryType = pgEnum('ledger_entry_type', [
   'ACCOUNT_INITIALIZED',
   'TRADE_CASH_DEBIT',
@@ -304,12 +314,15 @@ export const orders = pgTable(
     positionSide: positionSide('position_side').notNull().default('LONG'),
     intent: orderIntent('intent').notNull().default('OPEN'),
     orderType: orderType('order_type').notNull().default('MARKET'),
+    executionReason: executionReason('execution_reason').notNull().default('MANUAL_OPEN'),
     leverage: integer('leverage').notNull().default(1),
     requestedNotional: numeric('requested_notional', { precision: 20, scale: 2 }),
     requestedQuantity: numeric('requested_quantity', { precision: 28, scale: 8 }),
     requestedPercentageBps: integer('requested_percentage_bps'),
     limitPrice: numeric('limit_price', { precision: 28, scale: 8 }),
     triggerPrice: numeric('trigger_price', { precision: 28, scale: 8 }),
+    attachedTakeProfitPrice: numeric('attached_take_profit_price', { precision: 28, scale: 8 }),
+    attachedStopLossPrice: numeric('attached_stop_loss_price', { precision: 28, scale: 8 }),
     status: orderStatus('status').notNull().default('PENDING'),
     idempotencyKey: varchar('idempotency_key', { length: 128 }).notNull(),
     parentOrderId: uuid('parent_order_id'),
@@ -344,6 +357,10 @@ export const orders = pgTable(
       'orders_price_shape_valid',
       sql`(${table.orderType} IN ('MARKET', 'LIQUIDATION') AND ${table.limitPrice} IS NULL AND ${table.triggerPrice} IS NULL) OR (${table.orderType} = 'LIMIT' AND ${table.limitPrice} IS NOT NULL AND ${table.triggerPrice} IS NULL) OR (${table.orderType} IN ('STOP_MARKET', 'TAKE_PROFIT', 'STOP_LOSS') AND ${table.limitPrice} IS NULL AND ${table.triggerPrice} IS NOT NULL)`,
     ),
+    check(
+      'orders_attached_protection_valid',
+      sql`(${table.attachedTakeProfitPrice} IS NULL OR (${table.intent} = 'OPEN' AND ${table.attachedTakeProfitPrice} > 0)) AND (${table.attachedStopLossPrice} IS NULL OR (${table.intent} = 'OPEN' AND ${table.attachedStopLossPrice} > 0))`,
+    ),
   ],
 );
 
@@ -362,6 +379,7 @@ export const fills = pgTable(
     side: orderSide('side').notNull(),
     positionSide: positionSide('position_side').notNull().default('LONG'),
     intent: orderIntent('intent').notNull().default('OPEN'),
+    executionReason: executionReason('execution_reason').notNull().default('MANUAL_OPEN'),
     leverage: integer('leverage').notNull().default(1),
     referencePrice: numeric('reference_price', { precision: 28, scale: 8 }).notNull(),
     fillPrice: numeric('fill_price', { precision: 28, scale: 8 }).notNull(),
@@ -415,6 +433,72 @@ export const positions = pgTable(
     check(
       'positions_quantity_average_price_consistent',
       sql`(${table.quantity} = 0 AND ${table.averageEntryPrice} = 0) OR (${table.quantity} > 0 AND ${table.averageEntryPrice} > 0)`,
+    ),
+  ],
+);
+
+export const fillAudits = pgTable(
+  'fill_audits',
+  {
+    fillId: uuid('fill_id')
+      .primaryKey()
+      .references(() => fills.id, { onDelete: 'restrict' }),
+    orderId: uuid('order_id')
+      .notNull()
+      .references(() => orders.id, { onDelete: 'restrict' }),
+    entryId: uuid('entry_id')
+      .notNull()
+      .references(() => tournamentEntries.id, { onDelete: 'restrict' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    symbol: tradingSymbol('symbol').notNull(),
+    positionSideBefore: varchar('position_side_before', { length: 8 }).notNull(),
+    positionSideAfter: varchar('position_side_after', { length: 8 }).notNull(),
+    orderIntent: orderIntent('order_intent').notNull(),
+    triggerType: executionReason('trigger_type').notNull(),
+    requestedQuantity: numeric('requested_quantity', { precision: 28, scale: 8 }).notNull(),
+    filledQuantity: numeric('filled_quantity', { precision: 28, scale: 8 }).notNull(),
+    leverage: integer('leverage').notNull(),
+    averageEntryBefore: numeric('average_entry_before', { precision: 28, scale: 8 }),
+    markUsed: numeric('mark_used', { precision: 28, scale: 8 }).notNull(),
+    markProvider: varchar('mark_provider', { length: 64 }).notNull(),
+    markSourceTimestamp: timestamp('mark_source_timestamp', { withTimezone: true }).notNull(),
+    markReceivedTimestamp: timestamp('mark_received_timestamp', { withTimezone: true }).notNull(),
+    comparisonPrice: numeric('comparison_price', { precision: 28, scale: 8 }),
+    fillPrice: numeric('fill_price', { precision: 28, scale: 8 }).notNull(),
+    simulatedSpread: numeric('simulated_spread', { precision: 28, scale: 8 }).notNull(),
+    simulatedSlippage: numeric('simulated_slippage', { precision: 28, scale: 8 }).notNull(),
+    fee: numeric('fee', { precision: 20, scale: 2 }).notNull(),
+    realizedPnL: numeric('realized_pnl', { precision: 20, scale: 2 }).notNull(),
+    unrealizedPnLBefore: numeric('unrealized_pnl_before', { precision: 20, scale: 2 }).notNull(),
+    equityBefore: numeric('equity_before', { precision: 20, scale: 2 }).notNull(),
+    equityAfter: numeric('equity_after', { precision: 20, scale: 2 }).notNull(),
+    marginBefore: numeric('margin_before', { precision: 20, scale: 2 }).notNull(),
+    marginAfter: numeric('margin_after', { precision: 20, scale: 2 }).notNull(),
+    positionQuantityBefore: numeric('position_quantity_before', {
+      precision: 28,
+      scale: 8,
+    }).notNull(),
+    positionQuantityAfter: numeric('position_quantity_after', {
+      precision: 28,
+      scale: 8,
+    }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('fill_audits_order_idx').on(table.orderId),
+    check(
+      'fill_audits_position_sides_valid',
+      sql`${table.positionSideBefore} IN ('NONE', 'LONG', 'SHORT') AND ${table.positionSideAfter} IN ('NONE', 'LONG', 'SHORT')`,
+    ),
+    check(
+      'fill_audits_prices_quantities_positive',
+      sql`${table.requestedQuantity} > 0 AND ${table.filledQuantity} > 0 AND ${table.markUsed} > 0 AND ${table.fillPrice} > 0`,
+    ),
+    check(
+      'fill_audits_nonnegative_values',
+      sql`${table.leverage} >= 1 AND ${table.marginBefore} >= 0 AND ${table.marginAfter} >= 0 AND ${table.positionQuantityBefore} >= 0 AND ${table.positionQuantityAfter} >= 0 AND ${table.simulatedSpread} >= 0 AND ${table.simulatedSlippage} >= 0 AND ${table.fee} >= 0`,
     ),
   ],
 );

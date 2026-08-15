@@ -4,6 +4,7 @@ import {
   parseMoney,
   parsePrice,
   parseQuantity,
+  parseSignedMoney,
   priceToString,
   signedMoneyToString,
 } from '@trade-the-pool/shared';
@@ -122,6 +123,28 @@ describe('average-cost position accounting', () => {
     const closed = decreasePosition(short, 'SHORT', parseQuantity('0.10'), parsePrice('3800'));
     expect(moneyToString(closed.realizedOnFill)).toBe('20.00');
     expect(closed.position.quantity).toBe(parseQuantity('0.15'));
+  });
+
+  it.each([
+    ['LONG', '100', '110', '2.50'],
+    ['LONG', '100', '90', '-2.50'],
+    ['SHORT', '100', '90', '2.50'],
+    ['SHORT', '100', '110', '-2.50'],
+  ] as const)('uses the authoritative %s realized P&L formula', (side, entry, exit, expected) => {
+    const opened = increasePosition(null, 'ETH-USD', side, parseQuantity('1'), parsePrice(entry));
+    const partial = decreasePosition(opened, side, parseQuantity('0.25'), parsePrice(exit));
+    expect(signedMoneyToString(partial.realizedOnFill)).toBe(
+      signedMoneyToString(parseSignedMoney(expected)),
+    );
+    expect(partial.position.quantity).toBe(parseQuantity('0.75'));
+    const closed = decreasePosition(
+      partial.position,
+      side,
+      parseQuantity('0.75'),
+      parsePrice(exit),
+    );
+    expect(closed.position.quantity).toBe(0n);
+    expect(closed.position.averageEntryPrice).toBe(0n);
   });
 });
 

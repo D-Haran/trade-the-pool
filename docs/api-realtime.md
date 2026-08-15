@@ -45,6 +45,13 @@ The server derives bankrolls, fee selection, and projected prizes; clients do no
 - `POST /v1/dev/market/advance` (development auth only)
 - `GET /health/live`, `GET /health/ready`, `GET /health/market-data`
 
+Order and fill history include a normalized execution reason (`MANUAL_OPEN`, `MANUAL_CLOSE`,
+`LIMIT_TRIGGER`, `STOP_TRIGGER`, `TAKE_PROFIT`, `STOP_LOSS`, or `LIQUIDATION`) plus the safe audit
+projection when available. In development with development authentication enabled,
+`GET /v1/dev/audit/fills/:id` and `/v1/dev/audit/orders/:id` expose the complete owner-scoped
+forensic row. They are not registered in production. The development market control accepts
+`mode: "REJECT"` to exercise degraded-mark behavior without publishing a tick to execution.
+
 OpenAPI is generated from the same Zod request schemas registered with Fastify. In development,
 set `API_DOCS_ENABLED=true` to serve `/openapi.json` and the explorer at `/documentation`; keep
 them disabled where public docs are inappropriate.

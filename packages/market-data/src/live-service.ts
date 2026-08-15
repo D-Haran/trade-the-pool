@@ -3,6 +3,7 @@ import {
   CoinbaseMarketDataAdapter,
   KrakenMarketDataAdapter,
   PythHermesAdapter,
+  assertUniquePythFeedIds,
   type UpstreamEvent,
   type UpstreamMarketDataAdapter,
 } from './providers.js';
@@ -46,7 +47,23 @@ export type FreshnessConfiguration = {
   bookStaleMs: number;
   comparisonStaleMs: number;
   maximumDeviationBasisPoints: bigint;
+  maximumJumpBasisPoints: Readonly<Record<MarketSymbol, bigint>>;
   futureTimestampToleranceMs: number;
+};
+
+export const DEFAULT_MAXIMUM_JUMP_BASIS_POINTS: Readonly<Record<MarketSymbol, bigint>> = {
+  'BTC-USD': 1_500n,
+  'ETH-USD': 1_500n,
+  'SOL-USD': 2_500n,
+  'XRP-USD': 2_500n,
+  'DOGE-USD': 4_000n,
+  'LINK-USD': 2_500n,
+  'AVAX-USD': 2_500n,
+  'ADA-USD': 4_000n,
+  'SUI-USD': 4_000n,
+  'AAVE-USD': 4_000n,
+  'NEAR-USD': 4_000n,
+  'LTC-USD': 2_500n,
 };
 
 export const DEFAULT_FRESHNESS_CONFIGURATION: FreshnessConfiguration = {
@@ -57,6 +74,7 @@ export const DEFAULT_FRESHNESS_CONFIGURATION: FreshnessConfiguration = {
   bookStaleMs: 15_000,
   comparisonStaleMs: 30_000,
   maximumDeviationBasisPoints: 100n,
+  maximumJumpBasisPoints: DEFAULT_MAXIMUM_JUMP_BASIS_POINTS,
   futureTimestampToleranceMs: 2_000,
 };
 
@@ -106,6 +124,7 @@ export class LiveMarketDataService implements MarketDataProvider, StartableMarke
   readonly #eventListeners = new Set<MarketEventListener>();
   readonly #unsubscribers: Array<() => void> = [];
   readonly #lastStatuses = new Map<MarketSymbol, MarketFreshnessStatus>();
+  readonly #rejectedMarks = new Map<MarketSymbol, { receivedAt: Date }>();
   readonly #lastSubMinuteStatuses = new Map<
     string,
     { status: 'LIVE' | 'STALE' | 'UNAVAILABLE'; publishedAt: number }
@@ -194,6 +213,13 @@ export class LiveMarketDataService implements MarketDataProvider, StartableMarke
       ...snapshot,
       marketTimestamp: new Date(snapshot.marketTimestamp),
       receivedAt: new Date(snapshot.receivedAt),
+      ...(view.comparisonPrice
+        ? {
+            comparisonPrice: view.comparisonPrice.price,
+            comparisonSource: view.comparisonPrice.source,
+            comparisonMarketTimestamp: new Date(view.comparisonPrice.marketTimestamp),
+          }
+        : {}),
       status: view.status,
       executionEligible: view.status === 'LIVE' || view.status === 'DELAYED',
     };
@@ -289,11 +315,13 @@ export class LiveMarketDataService implements MarketDataProvider, StartableMarke
           deviationBasisPoints(authoritative.price, snapshot.price) >
           this.freshness.maximumDeviationBasisPoints,
       );
-      status = degraded
+      status = this.#rejectedMarks.has(symbol)
         ? 'DEGRADED'
-        : authoritativeAge > this.freshness.authoritativeDelayedMs
-          ? 'DELAYED'
-          : 'LIVE';
+        : degraded
+          ? 'DEGRADED'
+          : authoritativeAge > this.freshness.authoritativeDelayedMs
+            ? 'DELAYED'
+            : 'LIVE';
     }
 
     const availability: MarketAvailability =
@@ -460,6 +488,25 @@ export class LiveMarketDataService implements MarketDataProvider, StartableMarke
             : this.#comparison;
       const current = target.get(event.snapshot.symbol);
       if (current && current.marketTimestamp > event.snapshot.marketTimestamp) return;
+      if (event.role === 'AUTHORITATIVE') {
+        const rejection = this.markRejection(event.snapshot);
+        if (rejection) {
+          this.#rejectedMarks.set(event.snapshot.symbol, { receivedAt: event.snapshot.receivedAt });
+          this.publish({
+            type: 'mark-rejected',
+            symbol: event.snapshot.symbol,
+            rejectedPrice: event.snapshot.price,
+            trustedPrice: current?.price ?? null,
+            marketTimestamp: new Date(event.snapshot.marketTimestamp),
+            receivedAt: new Date(event.snapshot.receivedAt),
+            ...rejection,
+          });
+          this.publishStatusChanges();
+          this.publish({ type: 'price', view: this.getMarketView(event.snapshot.symbol) });
+          return;
+        }
+        this.#rejectedMarks.delete(event.snapshot.symbol);
+      }
       target.set(event.snapshot.symbol, event.snapshot);
       if (event.statistics) this.#statistics.set(event.snapshot.symbol, event.statistics);
       if (event.role === 'AUTHORITATIVE') {
@@ -518,6 +565,71 @@ export class LiveMarketDataService implements MarketDataProvider, StartableMarke
       Number.isFinite(received) &&
       timestamp <= received + this.freshness.futureTimestampToleranceMs
     );
+  }
+
+  private freshValidationComparisons(symbol: MarketSymbol, now: number): MarketPriceSnapshot[] {
+    return [this.#exchange.get(symbol), this.#comparison.get(symbol)].filter(
+      (snapshot): snapshot is MarketPriceSnapshot => {
+        const snapshotAge = age(snapshot?.marketTimestamp, now);
+        return (
+          snapshotAge !== null &&
+          snapshotAge >= -this.freshness.futureTimestampToleranceMs &&
+          snapshotAge <= this.freshness.comparisonStaleMs
+        );
+      },
+    );
+  }
+
+  private markRejection(snapshot: MarketPriceSnapshot): null | {
+    reason: 'COMPARISON_DIVERGENCE' | 'ABNORMAL_JUMP' | 'UNVERIFIED_INITIAL_MARK';
+    comparisonPrices: Array<{ source: string; price: Price; marketTimestamp: Date }>;
+    deviationBasisPoints: bigint | null;
+    jumpBasisPoints: bigint | null;
+  } {
+    const comparisons = this.freshValidationComparisons(
+      snapshot.symbol,
+      snapshot.receivedAt.getTime(),
+    );
+    const deviations = comparisons.map((candidate) =>
+      deviationBasisPoints(snapshot.price, candidate.price),
+    );
+    const maximumDeviation = deviations.reduce<bigint | null>(
+      (maximum, value) => (maximum === null || value > maximum ? value : maximum),
+      null,
+    );
+    const current = this.#authoritative.get(snapshot.symbol);
+    const jump = current ? deviationBasisPoints(snapshot.price, current.price) : null;
+    const comparisonPrices = comparisons.map((candidate) => ({
+      source: candidate.source,
+      price: candidate.price,
+      marketTimestamp: new Date(candidate.marketTimestamp),
+    }));
+    if (maximumDeviation !== null && maximumDeviation > this.freshness.maximumDeviationBasisPoints)
+      return {
+        reason: 'COMPARISON_DIVERGENCE',
+        comparisonPrices,
+        deviationBasisPoints: maximumDeviation,
+        jumpBasisPoints: jump,
+      };
+    if (!current && comparisons.length === 0)
+      return {
+        reason: 'UNVERIFIED_INITIAL_MARK',
+        comparisonPrices,
+        deviationBasisPoints: maximumDeviation,
+        jumpBasisPoints: jump,
+      };
+    if (
+      jump !== null &&
+      jump > this.freshness.maximumJumpBasisPoints[snapshot.symbol] &&
+      comparisons.length === 0
+    )
+      return {
+        reason: 'ABNORMAL_JUMP',
+        comparisonPrices,
+        deviationBasisPoints: maximumDeviation,
+        jumpBasisPoints: jump,
+      };
+    return null;
   }
 
   private publish(event: NormalizedMarketEvent): void {
@@ -663,6 +775,7 @@ export type MarketDataFactoryConfiguration = {
     bookStaleMs: number;
     comparisonStaleMs: number;
     maximumDeviationBasisPoints: number;
+    maximumJumpBasisPoints: Partial<Record<MarketSymbol, number>>;
     futureTimestampToleranceMs: number;
   }>;
   subMinuteStore?: SubMinuteCandleStore;
@@ -673,6 +786,7 @@ export function createLiveMarketDataService(
 ): LiveMarketDataService {
   if (!config.pythApiKey || !config.pythFeedIds)
     throw new Error('Live market data requires a Pyth API key and all configured feed IDs');
+  assertUniquePythFeedIds(config.pythFeedIds);
   const freshness: FreshnessConfiguration = {
     ...DEFAULT_FRESHNESS_CONFIGURATION,
     ...config.freshness,
@@ -680,6 +794,15 @@ export function createLiveMarketDataService(
       config.freshness?.maximumDeviationBasisPoints ??
         DEFAULT_FRESHNESS_CONFIGURATION.maximumDeviationBasisPoints,
     ),
+    maximumJumpBasisPoints: Object.fromEntries(
+      SUPPORTED_SYMBOLS.map((symbol) => [
+        symbol,
+        BigInt(
+          config.freshness?.maximumJumpBasisPoints?.[symbol] ??
+            DEFAULT_MAXIMUM_JUMP_BASIS_POINTS[symbol],
+        ),
+      ]),
+    ) as Record<MarketSymbol, bigint>,
   };
   return new LiveMarketDataService(
     {

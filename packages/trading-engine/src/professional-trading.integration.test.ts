@@ -2,6 +2,13 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { createDatabase } from '@trade-the-pool/database';
 import { DeterministicMarketPriceSource } from '@trade-the-pool/market-data';
 import {
+  parsePrice,
+  parseQuantity,
+  moneyFromMinorUnits,
+  priceQuantityToMoney,
+  signedMoneyToString,
+} from '@trade-the-pool/shared';
+import {
   createTournamentEntry,
   getAccountSummary,
   processConditionalOrders,
@@ -53,6 +60,7 @@ async function fixture<T>(
     return await run({ entryId: entry.id, tournamentId: tournament.id, market, now });
   } finally {
     await client`DELETE FROM account_ledger_entries WHERE entry_id = ${entry.id}`;
+    await client`DELETE FROM fill_audits WHERE entry_id = ${entry.id}`;
     await client`DELETE FROM fills WHERE entry_id = ${entry.id}`;
     await client`DELETE FROM positions WHERE entry_id = ${entry.id}`;
     await client`DELETE FROM orders WHERE entry_id = ${entry.id}`;
@@ -64,6 +72,175 @@ async function fixture<T>(
 }
 
 describe('professional trading orders', () => {
+  it('closes a modestly profitable 5x ETH short in stages without multiplying P&L or collapsing equity', async () => {
+    await fixture(async ({ entryId, market, now }) => {
+      const opened = await submitTradingOrder(
+        db,
+        market,
+        {
+          entryId,
+          symbol: 'ETH-USD',
+          positionSide: 'SHORT',
+          intent: 'OPEN',
+          orderType: 'MARKET',
+          requestedMargin: '2000.00',
+          leverage: 5,
+          idempotencyKey: 'catastrophic-regression-open',
+        },
+        { now },
+      );
+      expect(opened.order).toMatchObject({ side: 'SELL', leverage: 5 });
+      const profitableAt = new Date(now.getTime() + 1);
+      market.advancePrice('ETH-USD', '3988.00', profitableAt);
+      const profitable = await getAccountSummary(db, market, entryId, { now: profitableAt });
+      expect(Number(profitable.unrealizedPnL)).toBeGreaterThan(0);
+
+      const first = await submitTradingOrder(
+        db,
+        market,
+        {
+          entryId,
+          symbol: 'ETH-USD',
+          positionSide: 'SHORT',
+          intent: 'CLOSE',
+          orderType: 'MARKET',
+          percentageBps: 2_500,
+          idempotencyKey: 'catastrophic-regression-quarter',
+        },
+        { now: profitableAt },
+      );
+      const replay = await submitTradingOrder(
+        db,
+        market,
+        {
+          entryId,
+          symbol: 'ETH-USD',
+          positionSide: 'SHORT',
+          intent: 'CLOSE',
+          orderType: 'MARKET',
+          percentageBps: 2_500,
+          idempotencyKey: 'catastrophic-regression-quarter',
+        },
+        { now: profitableAt },
+      );
+      expect(replay).toMatchObject({ replayed: true, fill: { id: first.fill!.id } });
+      const expectedFirstRealized =
+        priceQuantityToMoney(
+          parsePrice(opened.fill!.fillPrice),
+          parseQuantity(first.fill!.quantity),
+        ) -
+        priceQuantityToMoney(
+          parsePrice(first.fill!.fillPrice),
+          parseQuantity(first.fill!.quantity),
+        );
+      expect(first.fill!.realizedPnL).toBe(
+        signedMoneyToString(moneyFromMinorUnits(expectedFirstRealized)),
+      );
+
+      await submitTradingOrder(
+        db,
+        market,
+        {
+          entryId,
+          symbol: 'ETH-USD',
+          positionSide: 'SHORT',
+          intent: 'CLOSE',
+          orderType: 'MARKET',
+          percentageBps: 5_000,
+          idempotencyKey: 'catastrophic-regression-half-remaining',
+        },
+        { now: profitableAt },
+      );
+      await submitTradingOrder(
+        db,
+        market,
+        {
+          entryId,
+          symbol: 'ETH-USD',
+          positionSide: 'SHORT',
+          intent: 'CLOSE',
+          orderType: 'MARKET',
+          percentageBps: 10_000,
+          idempotencyKey: 'catastrophic-regression-remainder',
+        },
+        { now: profitableAt },
+      );
+      const closed = await getAccountSummary(db, market, entryId, { now: profitableAt });
+      expect(closed.positions[0]).toMatchObject({
+        side: 'SHORT',
+        leverage: 5,
+        quantity: '0.00000000',
+        marginUsed: '0.00',
+      });
+      expect(Number(closed.equity)).toBeGreaterThan(9_900);
+      const auditRows = await client`
+        SELECT trigger_type, position_side_before, position_side_after,
+               equity_before, equity_after, margin_before, margin_after
+        FROM fill_audits audit
+        INNER JOIN fills fill ON fill.id = audit.fill_id
+        WHERE audit.entry_id = ${entryId}
+        ORDER BY fill.execution_sequence
+      `;
+      expect(auditRows).toHaveLength(4);
+      expect(auditRows.at(-1)).toMatchObject({
+        trigger_type: 'MANUAL_CLOSE',
+        position_side_before: 'SHORT',
+        position_side_after: 'NONE',
+        margin_after: '0.00',
+      });
+    });
+  });
+
+  it('pauses liquidation and conditional exits when an ETH mark is degraded', async () => {
+    await fixture(async ({ entryId, market, now }) => {
+      await submitTradingOrder(
+        db,
+        market,
+        {
+          entryId,
+          symbol: 'ETH-USD',
+          positionSide: 'SHORT',
+          intent: 'OPEN',
+          orderType: 'MARKET',
+          requestedMargin: '2000.00',
+          leverage: 5,
+          stopLossPrice: '4100.00',
+          idempotencyKey: 'degraded-mark-short',
+        },
+        { now },
+      );
+      const malformedAt = new Date(now.getTime() + 1);
+      const degraded = {
+        getSnapshot() {
+          return {
+            symbol: 'ETH-USD' as const,
+            price: parsePrice('188000'),
+            marketTimestamp: malformedAt,
+            receivedAt: malformedAt,
+            source: 'malformed-fixture',
+            status: 'DEGRADED' as const,
+            executionEligible: false,
+          };
+        },
+      };
+      await expect(
+        processLiquidations(db, degraded, 'ETH-USD', { now: malformedAt }),
+      ).rejects.toMatchObject({ code: 'STALE_MARKET_PRICE' });
+      await expect(
+        processConditionalOrders(db, degraded, 'ETH-USD', { now: malformedAt }),
+      ).rejects.toMatchObject({ code: 'STALE_MARKET_PRICE' });
+      const [position] = await client`
+        SELECT side, quantity FROM positions WHERE entry_id = ${entryId} AND symbol = 'ETH-USD'
+      `;
+      expect(position.side).toBe('SHORT');
+      expect(Number(position.quantity)).toBeGreaterThan(0);
+      const [closeCount] = await client`
+        SELECT count(*)::int AS count FROM fills WHERE entry_id = ${entryId} AND intent = 'CLOSE'
+      `;
+      expect(closeCount.count).toBe(0);
+    });
+  });
+
   it('opens, marks, partially closes, and fully closes a 1x short with exact accounting', async () => {
     await fixture(async ({ entryId, market, now }) => {
       const opened = await submitTradingOrder(
@@ -141,11 +318,50 @@ describe('professional trading orders', () => {
           orderType: 'LIMIT',
           requestedNotional: '500.00',
           limitPrice: '3900.00',
+          takeProfitPrice: '4100.00',
+          stopLossPrice: '3800.00',
           idempotencyKey: 'long-limit',
         },
         { now },
       );
       expect(pending.order.status).toBe('OPEN');
+      const replay = await submitTradingOrder(
+        db,
+        market,
+        {
+          entryId,
+          symbol: 'ETH-USD',
+          positionSide: 'LONG',
+          intent: 'OPEN',
+          orderType: 'LIMIT',
+          requestedNotional: '500.00',
+          limitPrice: '3900.00',
+          takeProfitPrice: '4100.00',
+          stopLossPrice: '3800.00',
+          idempotencyKey: 'long-limit',
+        },
+        { now },
+      );
+      expect(replay.replayed).toBe(true);
+      await expect(
+        submitTradingOrder(
+          db,
+          market,
+          {
+            entryId,
+            symbol: 'ETH-USD',
+            positionSide: 'LONG',
+            intent: 'OPEN',
+            orderType: 'LIMIT',
+            requestedNotional: '500.00',
+            limitPrice: '3900.00',
+            takeProfitPrice: '4200.00',
+            stopLossPrice: '3800.00',
+            idempotencyKey: 'long-limit',
+          },
+          { now },
+        ),
+      ).rejects.toMatchObject({ code: 'DUPLICATE_ORDER_CONFLICT' });
       market.advancePrice('ETH-USD', '3850.00', new Date(now.getTime() + 1));
       const fills = await processConditionalOrders(db, market, 'ETH-USD', {
         now: new Date(now.getTime() + 1),
@@ -156,6 +372,15 @@ describe('professional trading orders', () => {
         (await getAccountSummary(db, market, entryId, { now: new Date(now.getTime() + 1) }))
           .positions[0].side,
       ).toBe('LONG');
+      const protections = await client`
+        SELECT order_type, trigger_price, status FROM orders
+        WHERE parent_order_id = ${pending.order.id}
+        ORDER BY order_type
+      `;
+      expect(protections).toEqual([
+        { order_type: 'TAKE_PROFIT', trigger_price: '4100.00000000', status: 'OPEN' },
+        { order_type: 'STOP_LOSS', trigger_price: '3800.00000000', status: 'OPEN' },
+      ]);
     });
   });
 
@@ -204,6 +429,37 @@ describe('professional trading orders', () => {
           ['FILLED', 1],
         ]),
       );
+    });
+  });
+
+  it('executes a repeated conditional tick only once across concurrent processors', async () => {
+    await fixture(async ({ entryId, market, now }) => {
+      await submitTradingOrder(
+        db,
+        market,
+        {
+          entryId,
+          symbol: 'ETH-USD',
+          positionSide: 'LONG',
+          intent: 'OPEN',
+          orderType: 'MARKET',
+          requestedNotional: '1000.00',
+          takeProfitPrice: '4100.00',
+          idempotencyKey: 'duplicate-trigger-position',
+        },
+        { now },
+      );
+      const movedAt = new Date(now.getTime() + 1);
+      market.advancePrice('ETH-USD', '4200.00', movedAt);
+      const passes = await Promise.all([
+        processConditionalOrders(db, market, 'ETH-USD', { now: movedAt }),
+        processConditionalOrders(db, market, 'ETH-USD', { now: movedAt }),
+      ]);
+      expect(passes.flat()).toHaveLength(1);
+      const [closeFills] = await client`
+        SELECT count(*)::int AS count FROM fills WHERE entry_id = ${entryId} AND intent = 'CLOSE'
+      `;
+      expect(closeFills.count).toBe(1);
     });
   });
 
@@ -301,6 +557,20 @@ describe('professional trading orders', () => {
       );
       expect(first).toHaveLength(1);
       expect(replay.map((order) => order.id)).toEqual(first.map((order) => order.id));
+      await expect(
+        setPositionProtection(
+          db,
+          market,
+          {
+            entryId,
+            symbol: 'ETH-USD',
+            takeProfitPrice: null,
+            stopLossPrice: '3800.00',
+            idempotencyKey: 'stop-only-protection',
+          },
+          { now },
+        ),
+      ).rejects.toMatchObject({ code: 'DUPLICATE_ORDER_CONFLICT' });
       const [preserved] = await client`
         SELECT status FROM orders WHERE id = ${manualClose.order.id}
       `;

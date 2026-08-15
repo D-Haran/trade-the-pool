@@ -47,6 +47,7 @@ async function createFixture(startingBankroll = '10000.00'): Promise<Fixture> {
 
 async function removeFixture(fixture: Fixture): Promise<void> {
   await client`DELETE FROM account_ledger_entries WHERE entry_id = ${fixture.entryId}`;
+  await client`DELETE FROM fill_audits WHERE entry_id = ${fixture.entryId}`;
   await client`DELETE FROM fills WHERE entry_id = ${fixture.entryId}`;
   await client`DELETE FROM positions WHERE entry_id = ${fixture.entryId}`;
   await client`DELETE FROM orders WHERE entry_id = ${fixture.entryId}`;

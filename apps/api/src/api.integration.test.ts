@@ -907,6 +907,10 @@ afterAll(async () => {
       (SELECT id FROM tournament_entries WHERE tournament_id = ${tournamentId})
   `;
   await connection.client`
+    DELETE FROM fill_audits WHERE entry_id IN
+      (SELECT id FROM tournament_entries WHERE tournament_id = ${tournamentId})
+  `;
+  await connection.client`
     DELETE FROM fills WHERE entry_id IN
       (SELECT id FROM tournament_entries WHERE tournament_id = ${tournamentId})
   `;

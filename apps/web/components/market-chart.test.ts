@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { UTCTimestamp } from 'lightweight-charts';
+import { chartContainerSize } from '../lib/chart-size.js';
 import {
   bollingerBands,
   exponentialMovingAverage,
@@ -21,6 +22,14 @@ const candles = Array.from({ length: 40 }, (_, index) => ({
 }));
 
 describe('sub-minute chart behavior', () => {
+  it('uses the chart container dimensions and ignores transient zero-size layouts', () => {
+    expect(chartContainerSize({ clientWidth: 917.8, clientHeight: 463.2 })).toEqual({
+      width: 917,
+      height: 463,
+    });
+    expect(chartContainerSize({ clientWidth: 0, clientHeight: 463 })).toBeNull();
+  });
+
   it('shows seconds only for sub-minute timestamps', () => {
     expect(formatChartTimestamp(1_700_000_005, true, 'en-CA', 'UTC')).toMatch(/:\d{2}:\d{2}/);
     expect(formatChartTimestamp(1_700_000_005, false, 'en-CA', 'UTC')).not.toMatch(/:\d{2}:\d{2}/);

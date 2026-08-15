@@ -56,6 +56,7 @@ async function fixture<T>(
   } finally {
     await client`DELETE FROM tournament_settlement_marks WHERE tournament_id = ${tournament.id}`;
     await client`DELETE FROM account_ledger_entries WHERE entry_id = ${entry.id}`;
+    await client`DELETE FROM fill_audits WHERE entry_id = ${entry.id}`;
     await client`DELETE FROM fills WHERE entry_id = ${entry.id}`;
     await client`DELETE FROM positions WHERE entry_id = ${entry.id}`;
     await client`DELETE FROM orders WHERE entry_id = ${entry.id}`;

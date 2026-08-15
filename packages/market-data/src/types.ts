@@ -23,6 +23,9 @@ export type MarketPriceSnapshot = {
   receivedAt: Date;
   source: string;
   confidence?: Price;
+  comparisonPrice?: Price;
+  comparisonSource?: string;
+  comparisonMarketTimestamp?: Date;
   status?: MarketFreshnessStatus;
   executionEligible?: boolean;
 };
@@ -240,7 +243,19 @@ export type NormalizedMarketEvent =
       status: 'LIVE' | 'STALE' | 'UNAVAILABLE';
     }
   | { type: 'status'; symbol: MarketSymbol; status: MarketFreshnessStatus }
-  | { type: 'provider'; health: ProviderHealth };
+  | { type: 'provider'; health: ProviderHealth }
+  | {
+      type: 'mark-rejected';
+      symbol: MarketSymbol;
+      reason: 'COMPARISON_DIVERGENCE' | 'ABNORMAL_JUMP' | 'UNVERIFIED_INITIAL_MARK';
+      rejectedPrice: Price;
+      trustedPrice: Price | null;
+      comparisonPrices: Array<{ source: string; price: Price; marketTimestamp: Date }>;
+      deviationBasisPoints: bigint | null;
+      jumpBasisPoints: bigint | null;
+      marketTimestamp: Date;
+      receivedAt: Date;
+    };
 
 export type MarketEventListener = (event: NormalizedMarketEvent) => void;
 

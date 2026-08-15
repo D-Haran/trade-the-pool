@@ -1,6 +1,7 @@
 import { and, asc, count, eq, or, sql } from 'drizzle-orm';
 import {
   accountLedgerEntries,
+  fillAudits,
   fills,
   orders,
   positions,
@@ -88,6 +89,7 @@ export type ProfessionalOrderResult = {
     positionSide: PositionSide;
     intent: 'OPEN' | 'CLOSE';
     orderType: StoredOrderType;
+    executionReason: OrderRow['executionReason'];
     leverage: number;
     status: 'OPEN' | 'FILLED';
     idempotencyKey: string;
@@ -113,6 +115,19 @@ export type ProfessionalOrderResult = {
 
 type Transaction = Parameters<Parameters<Database['transaction']>[0]>[0];
 type OrderRow = typeof orders.$inferSelect;
+type AuthoritativeSnapshot = Awaited<ReturnType<typeof authoritativeSnapshot>>;
+
+function executionReasonFor(
+  orderType: StoredOrderType,
+  intent: 'OPEN' | 'CLOSE',
+): OrderRow['executionReason'] {
+  if (orderType === 'LIQUIDATION') return 'LIQUIDATION';
+  if (orderType === 'TAKE_PROFIT') return 'TAKE_PROFIT';
+  if (orderType === 'STOP_LOSS') return 'STOP_LOSS';
+  if (orderType === 'STOP_MARKET') return 'STOP_TRIGGER';
+  if (orderType === 'LIMIT') return 'LIMIT_TRIGGER';
+  return intent === 'OPEN' ? 'MANUAL_OPEN' : 'MANUAL_CLOSE';
+}
 
 function symbolFrom(value: string, config: ExecutionConfig): MarketSymbol {
   if (
@@ -186,6 +201,7 @@ function serializeResult(
       positionSide: order.positionSide,
       intent: order.intent,
       orderType: order.orderType,
+      executionReason: order.executionReason,
       leverage: order.leverage,
       status: order.status,
       idempotencyKey: order.idempotencyKey,
@@ -317,7 +333,9 @@ function sameLogicalRequest(
     order.requestedQuantity === request.requestedQuantity &&
     order.requestedPercentageBps === request.requestedPercentageBps &&
     order.limitPrice === request.limitPrice &&
-    order.triggerPrice === request.triggerPrice
+    order.triggerPrice === request.triggerPrice &&
+    order.attachedTakeProfitPrice === request.takeProfitPrice &&
+    order.attachedStopLossPrice === request.stopLossPrice
   );
 }
 
@@ -508,6 +526,7 @@ async function insertProtectionOrders(
     values.push({
       ...base,
       orderType: 'TAKE_PROFIT',
+      executionReason: 'TAKE_PROFIT',
       triggerPrice: takeProfitPrice,
       idempotencyKey: `protection:${parent.id}:tp`,
     });
@@ -515,6 +534,7 @@ async function insertProtectionOrders(
     values.push({
       ...base,
       orderType: 'STOP_LOSS',
+      executionReason: 'STOP_LOSS',
       triggerPrice: stopLossPrice,
       idempotencyKey: `protection:${parent.id}:sl`,
     });
@@ -528,6 +548,7 @@ async function executePersistedOrder(
   now: Date,
   config: ExecutionConfig,
   protection?: { takeProfitPrice: string | null; stopLossPrice: string | null },
+  executionSnapshot?: AuthoritativeSnapshot,
 ): Promise<{ order: OrderRow; fill: typeof fills.$inferSelect }> {
   const [entry] = await tx
     .select()
@@ -554,13 +575,26 @@ async function executePersistedOrder(
     now,
   );
 
-  const snapshot = await authoritativeSnapshot(provider, order.symbol, now, config);
+  const snapshot =
+    executionSnapshot ?? (await authoritativeSnapshot(provider, order.symbol, now, config));
+  if (snapshot.symbol !== order.symbol)
+    throw new DomainError(
+      'FINANCIAL_INVARIANT_VIOLATION',
+      'Execution snapshot symbol does not match the persisted order',
+    );
   const [positionRow] = await tx
     .select()
     .from(positions)
     .where(and(eq(positions.entryId, order.entryId), eq(positions.symbol, order.symbol)));
   const currentPosition = positionRow ? exactPosition(positionRow) : null;
   const cash = parseSignedMoney(entry.cash);
+  const basisBefore = await loadAccountBasis(tx, order.entryId, provider, config, now, snapshot);
+  const equityBefore = accountEquity(cash, basisBefore.exact, basisBefore.marks);
+  const unrealizedBefore =
+    currentPosition && currentPosition.quantity > 0n
+      ? unrealizedPnL(currentPosition, snapshot.price)
+      : moneyFromMinorUnits(0n);
+  const marginBefore = parseMoney(positionRow?.marginUsed ?? '0.00');
 
   let quantity: Quantity;
   let referenceNotional: Money;
@@ -681,6 +715,11 @@ async function executePersistedOrder(
     },
     config.maintenanceMarginBasisPoints,
   );
+  if (nextPosition.side !== order.positionSide || nextMargin < 0n)
+    throw new DomainError(
+      'FINANCIAL_INVARIANT_VIOLATION',
+      'Execution would create an invalid position side or margin balance',
+    );
 
   await tx
     .insert(positions)
@@ -728,6 +767,7 @@ async function executePersistedOrder(
       side: order.side,
       positionSide: order.positionSide,
       intent: order.intent,
+      executionReason: order.executionReason,
       leverage: effectiveLeverage,
       referencePrice: priceToString(quote.referencePrice),
       fillPrice: priceToString(quote.fillPrice),
@@ -785,19 +825,94 @@ async function executePersistedOrder(
     },
   ]);
 
-  await persistAccountState(tx, order.entryId, nextCash, provider, config, now, snapshot);
+  const equityAfter = await persistAccountState(
+    tx,
+    order.entryId,
+    nextCash,
+    provider,
+    config,
+    now,
+    snapshot,
+  );
+  const markedPositionBefore = currentPosition
+    ? priceQuantityToMoney(snapshot.price, currentPosition.quantity)
+    : moneyFromMinorUnits(0n);
+  const markedPositionAfter = priceQuantityToMoney(snapshot.price, nextPosition.quantity);
+  const signedMarkedBefore =
+    currentPosition?.side === 'SHORT' ? -markedPositionBefore : markedPositionBefore;
+  const signedMarkedAfter =
+    nextPosition.side === 'SHORT' ? -markedPositionAfter : markedPositionAfter;
+  const expectedEquityAfter = moneyFromMinorUnits(
+    equityBefore + (nextCash - cash) + (signedMarkedAfter - signedMarkedBefore),
+  );
+  if (equityAfter !== expectedEquityAfter)
+    throw new DomainError(
+      'FINANCIAL_INVARIANT_VIOLATION',
+      'Fill produced an unexplained account-equity transition',
+      {
+        orderId: order.id,
+        equityBefore: signedMoneyToString(equityBefore),
+        expectedEquityAfter: signedMoneyToString(expectedEquityAfter),
+        actualEquityAfter: signedMoneyToString(equityAfter),
+      },
+    );
+  await tx.insert(fillAudits).values({
+    fillId: fill.id,
+    orderId: order.id,
+    entryId: order.entryId,
+    userId: entry.userId,
+    symbol: order.symbol,
+    positionSideBefore:
+      currentPosition && currentPosition.quantity > 0n ? currentPosition.side : 'NONE',
+    positionSideAfter: nextPosition.quantity > 0n ? nextPosition.side : 'NONE',
+    orderIntent: order.intent,
+    triggerType: order.executionReason,
+    requestedQuantity: quantityToString(quantity),
+    filledQuantity: quantityToString(quantity),
+    leverage: effectiveLeverage,
+    averageEntryBefore:
+      currentPosition && currentPosition.quantity > 0n
+        ? priceToString(currentPosition.averageEntryPrice)
+        : null,
+    markUsed: priceToString(snapshot.price),
+    markProvider: snapshot.source,
+    markSourceTimestamp: snapshot.marketTimestamp,
+    markReceivedTimestamp: snapshot.receivedAt,
+    comparisonPrice: snapshot.comparisonPrice ? priceToString(snapshot.comparisonPrice) : null,
+    fillPrice: priceToString(quote.fillPrice),
+    simulatedSpread: decimalToString(quote.spreadAmount),
+    simulatedSlippage: decimalToString(quote.slippageAmount),
+    fee: moneyToString(fee),
+    realizedPnL: signedMoneyToString(realizedOnFill),
+    unrealizedPnLBefore: signedMoneyToString(unrealizedBefore),
+    equityBefore: signedMoneyToString(equityBefore),
+    equityAfter: signedMoneyToString(equityAfter),
+    marginBefore: moneyToString(marginBefore),
+    marginAfter: moneyToString(nextMargin),
+    positionQuantityBefore: quantityToString(currentPosition?.quantity ?? (0n as Quantity)),
+    positionQuantityAfter: quantityToString(nextPosition.quantity),
+    createdAt: now,
+  });
   const [filledOrder] = await tx
     .update(orders)
     .set({ status: 'FILLED', filledAt: now, updatedAt: now })
     .where(eq(orders.id, order.id))
     .returning();
 
-  if (order.intent === 'OPEN' && protection)
+  const effectiveProtection =
+    protection ??
+    (order.intent === 'OPEN'
+      ? {
+          takeProfitPrice: order.attachedTakeProfitPrice,
+          stopLossPrice: order.attachedStopLossPrice,
+        }
+      : undefined);
+  if (order.intent === 'OPEN' && effectiveProtection)
     await insertProtectionOrders(
       tx,
       filledOrder,
-      protection.takeProfitPrice,
-      protection.stopLossPrice,
+      effectiveProtection.takeProfitPrice,
+      effectiveProtection.stopLossPrice,
       now,
     );
   if (order.intent === 'CLOSE' && nextPosition.quantity === 0n)
@@ -934,12 +1049,15 @@ export async function submitTradingOrder(
         positionSide: normalized.positionSide,
         intent: normalized.intent,
         orderType: normalized.orderType,
+        executionReason: executionReasonFor(normalized.orderType, normalized.intent),
         leverage: effectiveLeverage,
         requestedNotional: normalized.requestedNotional,
         requestedQuantity: normalized.requestedQuantity,
         requestedPercentageBps: normalized.requestedPercentageBps,
         limitPrice: normalized.limitPrice,
         triggerPrice: normalized.triggerPrice,
+        attachedTakeProfitPrice: normalized.takeProfitPrice,
+        attachedStopLossPrice: normalized.stopLossPrice,
         status: normalized.orderType === 'MARKET' ? 'PENDING' : 'OPEN',
         idempotencyKey: normalized.idempotencyKey,
         createdAt: now,
@@ -958,10 +1076,18 @@ export async function submitTradingOrder(
                 .returning()
             )[0]
           : created;
-      const result = await executePersistedOrder(tx, provider, executing, now, config, {
-        takeProfitPrice: normalized.takeProfitPrice,
-        stopLossPrice: normalized.stopLossPrice,
-      });
+      const result = await executePersistedOrder(
+        tx,
+        provider,
+        executing,
+        now,
+        config,
+        {
+          takeProfitPrice: normalized.takeProfitPrice,
+          stopLossPrice: normalized.stopLossPrice,
+        },
+        snapshot,
+      );
       return serializeResult(result.order, result.fill, false);
     }
     return serializeResult(created, null, false);
@@ -1030,6 +1156,7 @@ export async function processLiquidations(
           positionSide: position.side,
           intent: 'CLOSE',
           orderType: 'LIQUIDATION',
+          executionReason: 'LIQUIDATION',
           leverage: position.leverage,
           requestedPercentageBps: 10_000,
           status: 'TRIGGERED',
@@ -1039,7 +1166,15 @@ export async function processLiquidations(
           updatedAt: now,
         })
         .returning();
-      const executed = await executePersistedOrder(tx, provider, order, now, config);
+      const executed = await executePersistedOrder(
+        tx,
+        provider,
+        order,
+        now,
+        config,
+        undefined,
+        snapshot,
+      );
       return serializeResult(executed.order, executed.fill, false);
     });
     if (result) results.push(result);
@@ -1115,7 +1250,15 @@ export async function processConditionalOrders(
         .where(eq(orders.id, order.id))
         .returning();
       try {
-        const executed = await executePersistedOrder(tx, provider, triggered, now, config);
+        const executed = await executePersistedOrder(
+          tx,
+          provider,
+          triggered,
+          now,
+          config,
+          undefined,
+          snapshot,
+        );
         return serializeResult(executed.order, executed.fill, false);
       } catch (error) {
         if (error instanceof DomainError && error.code === 'STALE_MARKET_PRICE') throw error;
@@ -1208,7 +1351,18 @@ export async function setPositionProtection(
           ),
         ),
       );
-    if (replay.length) return replay;
+    if (replay.length) {
+      const replayTakeProfit =
+        replay.find((order) => order.orderType === 'TAKE_PROFIT')?.triggerPrice ?? null;
+      const replayStopLoss =
+        replay.find((order) => order.orderType === 'STOP_LOSS')?.triggerPrice ?? null;
+      if (replayTakeProfit !== takeProfit || replayStopLoss !== stopLoss)
+        throw new DomainError(
+          'DUPLICATE_ORDER_CONFLICT',
+          'Idempotency key was already used for different protection levels',
+        );
+      return replay;
+    }
     const [positionRow] = await tx
       .select()
       .from(positions)
@@ -1257,6 +1411,7 @@ export async function setPositionProtection(
       values.push({
         ...base,
         orderType: 'TAKE_PROFIT',
+        executionReason: 'TAKE_PROFIT',
         triggerPrice: takeProfit,
         idempotencyKey: `${replayPrefix}:tp`,
       });
@@ -1264,6 +1419,7 @@ export async function setPositionProtection(
       values.push({
         ...base,
         orderType: 'STOP_LOSS',
+        executionReason: 'STOP_LOSS',
         triggerPrice: stopLoss,
         idempotencyKey: `${replayPrefix}:sl`,
       });

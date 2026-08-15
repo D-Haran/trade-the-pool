@@ -50,6 +50,20 @@ Freshness thresholds are centralized in validated environment configuration:
 - a fresh comparison price differing from the mark by more than `MARKET_MAX_DEVIATION_BPS` makes
   that symbol `DEGRADED`.
 
+Authoritative marks are validated before they can replace the last trusted value. A mark that
+diverges from either healthy Kraken/Coinbase comparison beyond policy is rejected. When both
+comparisons are unavailable, a per-risk-tier one-tick jump limit rejects obviously mis-scaled
+updates; the defaults are 15% for BTC/ETH, 25% for the middle tier, and 40% for the most volatile
+tier. These thresholds are configurable with `MARKET_MAX_JUMP_BPS_TIER_1..3`.
+
+A rejected mark is never published to execution listeners. The service preserves the prior
+trusted mark, marks that symbol degraded, emits a structured `mark-rejected` observability event,
+and pauses new orders, liquidation, TP/SL, stop, and settlement use. Recovery requires a
+subsequent valid authoritative mark that is plausible from the trusted mark or corroborated by
+every fresh comparison feed. Live startup also rejects duplicate Pyth feed IDs so a configuration
+error cannot cross-wire assets, and pauses an initial authority mark until a fresh independent
+exchange/comparison price can corroborate it.
+
 The market freshness states are `LIVE`, `DELAYED`, `STALE`, `RECONNECTING`, `UNAVAILABLE`, and
 `DEGRADED`. Application availability is separately exposed as `ACTIVE`, `DEGRADED`, or `PAUSED`
 (`DISABLED` remains available for registry policy). New orders and conditional evaluation are

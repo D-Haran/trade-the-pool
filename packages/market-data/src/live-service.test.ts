@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { parsePrice, parseQuantity } from '@trade-the-pool/shared';
-import { createLiveMarketDataService, LiveMarketDataService } from './live-service.js';
+import {
+  createLiveMarketDataService,
+  DEFAULT_MAXIMUM_JUMP_BASIS_POINTS,
+  LiveMarketDataService,
+} from './live-service.js';
 import type { UpstreamEvent, UpstreamMarketDataAdapter } from './providers.js';
 import type {
   MarketCandle,
@@ -103,6 +107,119 @@ describe('LiveMarketDataService', () => {
     void service.close();
   });
 
+  it('preserves the last trusted ETH mark and suppresses execution callbacks for a malformed scale jump', () => {
+    const primary = new Adapter('primary');
+    const comparison = new Adapter('comparison');
+    const authoritative = new Adapter('authority');
+    const service = new LiveMarketDataService({ primary, comparison, authoritative });
+    const executable: MarketPriceSnapshot[] = [];
+    let rejected = 0;
+    service.subscribe((snapshot) => executable.push(snapshot));
+    service.subscribeMarketEvents((event) => {
+      if (event.type === 'mark-rejected') rejected += 1;
+    });
+    service.start();
+    primary.emit({ type: 'price', role: 'PRIMARY_EXCHANGE', snapshot: quote('ETH-USD', '1880') });
+    comparison.emit({ type: 'price', role: 'COMPARISON', snapshot: quote('ETH-USD', '1881') });
+    authoritative.emit({
+      type: 'price',
+      role: 'AUTHORITATIVE',
+      snapshot: quote('ETH-USD', '1880'),
+    });
+    expect(executable).toHaveLength(1);
+
+    authoritative.emit({
+      type: 'price',
+      role: 'AUTHORITATIVE',
+      snapshot: quote('ETH-USD', '188000'),
+    });
+    expect(executable).toHaveLength(1);
+    expect(service.getMarketView('ETH-USD')).toMatchObject({
+      status: 'DEGRADED',
+      authoritativeMark: { price: parsePrice('1880') },
+    });
+    expect(rejected).toBe(1);
+
+    authoritative.emit({
+      type: 'price',
+      role: 'AUTHORITATIVE',
+      snapshot: quote('ETH-USD', '1881'),
+    });
+    expect(executable).toHaveLength(2);
+    expect(service.getSnapshot('ETH-USD')).toMatchObject({
+      price: parsePrice('1881'),
+      status: 'LIVE',
+      executionEligible: true,
+    });
+    void service.close();
+  });
+
+  it('rejects an unsupported one-tick jump when comparisons are unavailable without cross-wiring symbols', () => {
+    const primary = new Adapter('primary');
+    const comparison = new Adapter('comparison');
+    const authoritative = new Adapter('authority');
+    const service = new LiveMarketDataService({ primary, comparison, authoritative });
+    service.start();
+    primary.emit({ type: 'price', role: 'PRIMARY_EXCHANGE', snapshot: quote('ETH-USD', '2000') });
+    authoritative.emit({
+      type: 'price',
+      role: 'AUTHORITATIVE',
+      snapshot: quote('ETH-USD', '2000'),
+    });
+    primary.emit({
+      type: 'price',
+      role: 'PRIMARY_EXCHANGE',
+      snapshot: quote('BTC-USD', '100000'),
+    });
+    authoritative.emit({
+      type: 'price',
+      role: 'AUTHORITATIVE',
+      snapshot: quote('BTC-USD', '100000'),
+    });
+    const future = new Date(Date.now() + 30_000);
+    authoritative.emit({
+      type: 'price',
+      role: 'AUTHORITATIVE',
+      snapshot: {
+        ...quote('ETH-USD', '20000', future),
+        receivedAt: future,
+      },
+    });
+    expect(service.getMarketView('ETH-USD')).toMatchObject({
+      status: 'DEGRADED',
+      authoritativeMark: { symbol: 'ETH-USD', price: parsePrice('2000') },
+    });
+    expect(service.getSnapshot('BTC-USD')).toMatchObject({
+      symbol: 'BTC-USD',
+      price: parsePrice('100000'),
+    });
+    void service.close();
+  });
+
+  it('pauses rather than trusting a cold-start mark with no independent price', () => {
+    const primary = new Adapter('primary');
+    const comparison = new Adapter('comparison');
+    const authoritative = new Adapter('authority');
+    const service = new LiveMarketDataService({ primary, comparison, authoritative });
+    let rejectionReason: string | null = null;
+    service.subscribeMarketEvents((event) => {
+      if (event.type === 'mark-rejected') rejectionReason = event.reason;
+    });
+    service.start();
+    authoritative.emit({
+      type: 'price',
+      role: 'AUTHORITATIVE',
+      snapshot: quote('ETH-USD', '188000'),
+    });
+    expect(service.getMarketView('ETH-USD')).toMatchObject({
+      status: 'UNAVAILABLE',
+      authoritativeMark: null,
+    });
+    expect(rejectionReason).toBe('UNVERIFIED_INITIAL_MARK');
+    expect(() => service.getSnapshot('ETH-USD')).toThrow();
+    void service.close();
+  });
+
   it('marks old authority stale and deduplicates/reconciles candle history requests', async () => {
     const primary = new Adapter('primary');
     const comparison = new Adapter('comparison');
@@ -117,10 +234,16 @@ describe('LiveMarketDataService', () => {
         bookStaleMs: 20,
         comparisonStaleMs: 20,
         maximumDeviationBasisPoints: 100n,
+        maximumJumpBasisPoints: DEFAULT_MAXIMUM_JUMP_BASIS_POINTS,
         futureTimestampToleranceMs: 2_000,
       },
     );
     service.start();
+    primary.emit({
+      type: 'price',
+      role: 'PRIMARY_EXCHANGE',
+      snapshot: quote('BTC-USD', '100000'),
+    });
     authoritative.emit({
       type: 'price',
       role: 'AUTHORITATIVE',
@@ -194,6 +317,7 @@ describe('LiveMarketDataService', () => {
         bookStaleMs: 20,
         comparisonStaleMs: 20,
         maximumDeviationBasisPoints: 100n,
+        maximumJumpBasisPoints: DEFAULT_MAXIMUM_JUMP_BASIS_POINTS,
         futureTimestampToleranceMs: 2_000,
       },
     );
@@ -202,6 +326,11 @@ describe('LiveMarketDataService', () => {
       type: 'price',
       role: 'PRIMARY_EXCHANGE',
       snapshot: quote('SOL-USD', '200', new Date(Date.now() - 100)),
+    });
+    comparison.emit({
+      type: 'price',
+      role: 'COMPARISON',
+      snapshot: quote('SOL-USD', '200'),
     });
     authoritative.emit({
       type: 'price',

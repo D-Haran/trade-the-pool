@@ -525,11 +525,15 @@ export function parsePythUpdates(
   feedIds: Partial<Record<MarketSymbol, string>>,
   receivedAt = new Date(),
 ): MarketPriceSnapshot[] {
-  const inverse = new Map(
-    Object.entries(feedIds).flatMap(([symbol, id]) =>
-      id ? [[id.replace(/^0x/, '').toLowerCase(), symbol] as const] : [],
-    ),
-  );
+  const inverse = new Map<string, string>();
+  const ambiguous = new Set<string>();
+  for (const [symbol, id] of Object.entries(feedIds)) {
+    if (!id) continue;
+    const normalized = id.replace(/^0x/, '').toLowerCase();
+    if (inverse.has(normalized)) ambiguous.add(normalized);
+    else inverse.set(normalized, symbol);
+  }
+  for (const id of ambiguous) inverse.delete(id);
   const parsed = records(record(payload)?.parsed);
   return parsed.flatMap((item) => {
     try {
@@ -563,6 +567,18 @@ export function parsePythUpdates(
       return [];
     }
   });
+}
+
+export function assertUniquePythFeedIds(feedIds: Record<MarketSymbol, string>): void {
+  const normalized = Object.entries(feedIds).map(
+    ([symbol, id]) => [symbol, id.replace(/^0x/, '').toLowerCase()] as const,
+  );
+  const ids = new Set(normalized.map(([, id]) => id));
+  if (
+    ids.size !== SUPPORTED_SYMBOLS.length ||
+    normalized.some(([, id]) => !/^[0-9a-f]{64}$/.test(id))
+  )
+    throw new Error('Live market data requires one unique valid Pyth feed ID per symbol');
 }
 
 export class PythHermesAdapter implements UpstreamMarketDataAdapter {

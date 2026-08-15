@@ -24,6 +24,7 @@ describe('provider normalization', () => {
   });
 
   it('normalizes Pyth integer/exponent prices and configured feed IDs', () => {
+    expect(priceToString(pythIntegerToPrice('188319000000', -8))).toBe('1883.19000000');
     expect(priceToString(pythIntegerToPrice('10012345678900', -8))).toBe('100123.45678900');
     const snapshots = parsePythUpdates(
       {
@@ -60,6 +61,19 @@ describe('provider normalization', () => {
           'ETH-USD': 'bb'.repeat(32),
           'SOL-USD': 'cc'.repeat(32),
         },
+      ),
+    ).toEqual([]);
+    expect(
+      parsePythUpdates(
+        {
+          parsed: [
+            {
+              id: 'aa'.repeat(32),
+              price: { price: '188319000000', conf: '1', expo: -8, publish_time: 1_800_000_000 },
+            },
+          ],
+        },
+        { 'BTC-USD': 'aa'.repeat(32), 'ETH-USD': 'aa'.repeat(32) },
       ),
     ).toEqual([]);
   });

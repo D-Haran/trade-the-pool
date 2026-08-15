@@ -176,6 +176,15 @@ function PositionsTable({
   );
 }
 
+function executionAction(
+  side: 'BUY' | 'SELL',
+  positionSide: 'LONG' | 'SHORT',
+  intent: 'OPEN' | 'CLOSE',
+): string {
+  if (intent === 'CLOSE') return positionSide === 'SHORT' ? 'BUY TO CLOSE' : 'SELL TO CLOSE';
+  return `${side} TO OPEN`;
+}
+
 function OrdersTable({
   orders,
   open,
@@ -207,8 +216,8 @@ function OrdersTable({
         <span>Created</span>
         <span>Symbol</span>
         <span>Position</span>
-        <span>Intent</span>
-        <span>Type</span>
+        <span>Action</span>
+        <span>Type / reason</span>
         <span>Size</span>
         <span>Limit / Stop</span>
         <span>Status</span>
@@ -232,8 +241,10 @@ function OrdersTable({
           <span className={`position-side position-side--${order.positionSide.toLowerCase()}`}>
             {order.positionSide} · {order.leverage}x
           </span>
-          <span>{order.intent}</span>
-          <span>{order.orderType.replace('_', ' ')}</span>
+          <span>{executionAction(order.side, order.positionSide, order.intent)}</span>
+          <span>
+            {order.orderType.replaceAll('_', ' ')} · {order.executionReason.replaceAll('_', ' ')}
+          </span>
           <span className="tabular">
             {order.requestedNotional
               ? formatUsd(order.requestedNotional)
@@ -281,7 +292,7 @@ function TradesTable({ fills }: { fills: FillHistoryDto[] }) {
         <span>Symbol</span>
         <span>Side</span>
         <span>Position</span>
-        <span>Intent</span>
+        <span>Action / reason</span>
         <span>Quantity</span>
         <span>Reference</span>
         <span>Fill</span>
@@ -306,7 +317,10 @@ function TradesTable({ fills }: { fills: FillHistoryDto[] }) {
           <span>
             {fill.positionSide} · {fill.leverage}x
           </span>
-          <span>{fill.intent}</span>
+          <span>
+            {executionAction(fill.side, fill.positionSide, fill.intent)} ·{' '}
+            {fill.executionReason.replaceAll('_', ' ')}
+          </span>
           <span className="tabular">{formatQuantity(fill.quantity)}</span>
           <span className="tabular">{formatPrice(fill.referencePrice)}</span>
           <span className="tabular">{formatPrice(fill.fillPrice)}</span>

@@ -1,5 +1,6 @@
 import { and, asc, count, desc, eq, ilike, or, sql } from 'drizzle-orm';
 import {
+  fillAudits,
   fills,
   orders,
   positions,
@@ -802,15 +803,16 @@ export class EntryReadService {
       .from(orders)
       .where(eq(orders.entryId, entryId));
     const rows = await this.db
-      .select({ order: orders, fill: fills })
+      .select({ order: orders, fill: fills, audit: fillAudits })
       .from(orders)
       .leftJoin(fills, eq(fills.orderId, orders.id))
+      .leftJoin(fillAudits, eq(fillAudits.fillId, fills.id))
       .where(eq(orders.entryId, entryId))
       .orderBy(desc(orders.createdAt), desc(orders.id))
       .limit(pagination.pageSize)
       .offset((pagination.page - 1) * pagination.pageSize);
     return {
-      data: rows.map(({ order, fill }) => ({
+      data: rows.map(({ order, fill, audit }) => ({
         id: order.id,
         status: order.status,
         symbol: order.symbol,
@@ -818,6 +820,7 @@ export class EntryReadService {
         positionSide: order.positionSide,
         intent: order.intent,
         orderType: order.orderType,
+        executionReason: order.executionReason,
         leverage: order.leverage,
         requestedNotional: order.requestedNotional,
         requestedQuantity: order.requestedQuantity,
@@ -841,6 +844,22 @@ export class EntryReadService {
               fee: fill.feeAmount,
               realizedPnL: fill.realizedPnL,
               leverage: fill.leverage,
+              executionReason: fill.executionReason,
+              audit: audit
+                ? {
+                    markUsed: audit.markUsed,
+                    markProvider: audit.markProvider,
+                    markSourceTimestamp: audit.markSourceTimestamp,
+                    markReceivedTimestamp: audit.markReceivedTimestamp,
+                    comparisonPrice: audit.comparisonPrice,
+                    equityBefore: audit.equityBefore,
+                    equityAfter: audit.equityAfter,
+                    marginBefore: audit.marginBefore,
+                    marginAfter: audit.marginAfter,
+                    positionQuantityBefore: audit.positionQuantityBefore,
+                    positionQuantityAfter: audit.positionQuantityAfter,
+                  }
+                : null,
             }
           : null,
       })),
@@ -854,15 +873,16 @@ export class EntryReadService {
       .from(fills)
       .where(eq(fills.entryId, entryId));
     const rows = await this.db
-      .select({ fill: fills, order: orders })
+      .select({ fill: fills, order: orders, audit: fillAudits })
       .from(fills)
       .innerJoin(orders, eq(orders.id, fills.orderId))
+      .leftJoin(fillAudits, eq(fillAudits.fillId, fills.id))
       .where(eq(fills.entryId, entryId))
       .orderBy(desc(fills.executionSequence))
       .limit(pagination.pageSize)
       .offset((pagination.page - 1) * pagination.pageSize);
     return {
-      data: rows.map(({ fill, order }) => ({
+      data: rows.map(({ fill, order, audit }) => ({
         id: fill.id,
         orderId: order.id,
         timestamp: fill.serverTimestamp,
@@ -870,6 +890,7 @@ export class EntryReadService {
         side: fill.side,
         positionSide: fill.positionSide,
         intent: fill.intent,
+        executionReason: fill.executionReason,
         leverage: fill.leverage,
         referencePrice: fill.referencePrice,
         fillPrice: fill.fillPrice,
@@ -879,6 +900,21 @@ export class EntryReadService {
         slippage: fill.slippageAmount,
         fee: fill.feeAmount,
         realizedPnL: fill.realizedPnL,
+        audit: audit
+          ? {
+              markUsed: audit.markUsed,
+              markProvider: audit.markProvider,
+              markSourceTimestamp: audit.markSourceTimestamp,
+              markReceivedTimestamp: audit.markReceivedTimestamp,
+              comparisonPrice: audit.comparisonPrice,
+              equityBefore: audit.equityBefore,
+              equityAfter: audit.equityAfter,
+              marginBefore: audit.marginBefore,
+              marginAfter: audit.marginAfter,
+              positionQuantityBefore: audit.positionQuantityBefore,
+              positionQuantityAfter: audit.positionQuantityAfter,
+            }
+          : null,
       })),
       pagination: pageMetadata(pagination.page, pagination.pageSize, Number(total)),
     };
@@ -941,5 +977,27 @@ export class EntryReadService {
         : null,
       profitFactor: ratio,
     };
+  }
+
+  async fillAudit(fillId: string) {
+    const [row] = await this.db
+      .select({ fill: fills, order: orders, audit: fillAudits })
+      .from(fills)
+      .innerJoin(orders, eq(orders.id, fills.orderId))
+      .leftJoin(fillAudits, eq(fillAudits.fillId, fills.id))
+      .where(eq(fills.id, fillId));
+    if (!row) throw new ApiError(404, 'NOT_FOUND', 'Fill does not exist.');
+    return row;
+  }
+
+  async orderAudit(orderId: string) {
+    const [row] = await this.db
+      .select({ order: orders, fill: fills, audit: fillAudits })
+      .from(orders)
+      .leftJoin(fills, eq(fills.orderId, orders.id))
+      .leftJoin(fillAudits, eq(fillAudits.fillId, fills.id))
+      .where(eq(orders.id, orderId));
+    if (!row) throw new ApiError(404, 'NOT_FOUND', 'Order does not exist.');
+    return row;
   }
 }

@@ -1,6 +1,7 @@
 import { and, asc, count, eq } from 'drizzle-orm';
 import {
   accountLedgerEntries,
+  fillAudits,
   fills,
   orders,
   positions,
@@ -48,6 +49,7 @@ import {
 } from './domain.js';
 import { DomainError } from './errors.js';
 import { estimatedLiquidationPrice, maximumBuyingPower } from './risk.js';
+import { releasedMargin } from './risk.js';
 
 export type BuyMarketOrder = {
   entryId: string;
@@ -344,6 +346,26 @@ export async function executeMarketOrder(
       .where(and(eq(positions.entryId, request.entryId), eq(positions.symbol, symbol)));
     const currentPosition = positionRow ? exactPosition(positionRow) : null;
     const cash = parseMoney(entry.cash);
+    const beforeRows = await tx
+      .select()
+      .from(positions)
+      .where(eq(positions.entryId, request.entryId));
+    const beforeExact = beforeRows.map(exactPosition);
+    const beforeMarks = new Map<MarketSymbol, Price>();
+    for (const position of beforeExact) {
+      if (position.quantity === 0n) continue;
+      const positionSnapshot =
+        position.symbol === symbol
+          ? snapshot
+          : await authoritativeSnapshot(provider, position.symbol, now, config);
+      beforeMarks.set(position.symbol, positionSnapshot.price);
+    }
+    const equityBefore = accountEquity(cash, beforeExact, beforeMarks);
+    const unrealizedBefore =
+      currentPosition && currentPosition.quantity > 0n
+        ? unrealizedPnL(currentPosition, snapshot.price)
+        : moneyFromMinorUnits(0n);
+    const marginBefore = positionRow ? parseMoney(positionRow.marginUsed) : moneyFromMinorUnits(0n);
 
     let quantity: Quantity;
     let referenceNotional: Money;
@@ -404,6 +426,7 @@ export async function executeMarketOrder(
 
     let nextCash: Money;
     let nextPosition: ExactPosition;
+    let nextMargin: Money;
     if (request.side === 'BUY') {
       const totalDebit = notional + fee;
       if (totalDebit > cash)
@@ -413,26 +436,42 @@ export async function executeMarketOrder(
         );
       nextCash = moneyFromMinorUnits(cash - totalDebit);
       nextPosition = buyPosition(currentPosition, symbol, quantity, quote.fillPrice);
+      nextMargin = moneyFromMinorUnits(marginBefore + notional);
     } else {
       const sold = sellPosition(currentPosition, quantity, quote.fillPrice);
       nextPosition = sold.position;
       nextCash = moneyFromMinorUnits(cash + notional - fee);
+      nextMargin = moneyFromMinorUnits(
+        marginBefore - releasedMargin(marginBefore, quantity, currentPosition!.quantity),
+      );
     }
     if (nextCash < 0n || nextPosition.quantity < 0n)
       throw new DomainError(
         'FINANCIAL_INVARIANT_VIOLATION',
         'Order would violate financial invariants',
       );
+    const liquidationPrice = estimatedLiquidationPrice(
+      {
+        side: 'LONG',
+        quantity: nextPosition.quantity,
+        averageEntryPrice: nextPosition.averageEntryPrice,
+        leverage: 1,
+        marginUsed: nextMargin,
+      },
+      config.maintenanceMarginBasisPoints,
+    );
 
     const [order] = await tx
       .insert(orders)
       .values({
         entryId: request.entryId,
         symbol,
+        leverage: 1,
         side: request.side,
         positionSide: 'LONG',
         intent: request.side === 'BUY' ? 'OPEN' : 'CLOSE',
         orderType: 'MARKET',
+        executionReason: request.side === 'BUY' ? 'MANUAL_OPEN' : 'MANUAL_CLOSE',
         requestedNotional,
         requestedQuantity,
         requestedPercentageBps,
@@ -448,12 +487,16 @@ export async function executeMarketOrder(
       .values({
         entryId: request.entryId,
         symbol,
+        side: 'LONG',
+        leverage: 1,
         quantity: quantityToString(nextPosition.quantity),
         averageEntryPrice:
           nextPosition.quantity === 0n
             ? '0.00000000'
             : priceToString(nextPosition.averageEntryPrice),
         realizedPnL: signedMoneyToString(nextPosition.realizedPnL),
+        marginUsed: moneyToString(nextMargin),
+        liquidationPrice: liquidationPrice ? priceToString(liquidationPrice) : null,
         updatedAt: now,
       })
       .onConflictDoUpdate({
@@ -465,6 +508,10 @@ export async function executeMarketOrder(
               ? '0.00000000'
               : priceToString(nextPosition.averageEntryPrice),
           realizedPnL: signedMoneyToString(nextPosition.realizedPnL),
+          marginUsed: moneyToString(nextMargin),
+          side: 'LONG',
+          leverage: 1,
+          liquidationPrice: liquidationPrice ? priceToString(liquidationPrice) : null,
           updatedAt: now,
         },
       });
@@ -485,6 +532,7 @@ export async function executeMarketOrder(
         side: request.side,
         positionSide: 'LONG',
         intent: request.side === 'BUY' ? 'OPEN' : 'CLOSE',
+        executionReason: request.side === 'BUY' ? 'MANUAL_OPEN' : 'MANUAL_CLOSE',
         referencePrice: priceToString(quote.referencePrice),
         fillPrice: priceToString(quote.fillPrice),
         quantity: quantityToString(quantity),
@@ -545,7 +593,60 @@ export async function executeMarketOrder(
             },
           ];
     await tx.insert(accountLedgerEntries).values(ledgerValues);
-    await calculateAndPersistAccountState(tx, request.entryId, nextCash, provider, config, now);
+    const afterState = await calculateAndPersistAccountState(
+      tx,
+      request.entryId,
+      nextCash,
+      provider,
+      config,
+      now,
+    );
+    const markedQuantity = priceQuantityToMoney(snapshot.price, quantity);
+    const executionImpact =
+      request.side === 'BUY' ? markedQuantity - notional : notional - markedQuantity;
+    const expectedEquityAfter = moneyFromMinorUnits(equityBefore + executionImpact - fee);
+    if (afterState.equity !== expectedEquityAfter)
+      throw new DomainError(
+        'FINANCIAL_INVARIANT_VIOLATION',
+        'Fill produced an unexplained account-equity transition',
+      );
+    await tx.insert(fillAudits).values({
+      fillId: fill.id,
+      orderId: order.id,
+      entryId: request.entryId,
+      userId: entry.userId,
+      symbol,
+      positionSideBefore:
+        currentPosition && currentPosition.quantity > 0n ? currentPosition.side : 'NONE',
+      positionSideAfter: nextPosition.quantity > 0n ? nextPosition.side : 'NONE',
+      orderIntent: request.side === 'BUY' ? 'OPEN' : 'CLOSE',
+      triggerType: request.side === 'BUY' ? 'MANUAL_OPEN' : 'MANUAL_CLOSE',
+      requestedQuantity: quantityToString(quantity),
+      filledQuantity: quantityToString(quantity),
+      leverage: 1,
+      averageEntryBefore:
+        currentPosition && currentPosition.quantity > 0n
+          ? priceToString(currentPosition.averageEntryPrice)
+          : null,
+      markUsed: priceToString(snapshot.price),
+      markProvider: snapshot.source,
+      markSourceTimestamp: snapshot.marketTimestamp,
+      markReceivedTimestamp: snapshot.receivedAt,
+      comparisonPrice: snapshot.comparisonPrice ? priceToString(snapshot.comparisonPrice) : null,
+      fillPrice: priceToString(quote.fillPrice),
+      simulatedSpread: decimalToString(quote.spreadAmount),
+      simulatedSlippage: decimalToString(quote.slippageAmount),
+      fee: moneyToString(fee),
+      realizedPnL: fill.realizedPnL,
+      unrealizedPnLBefore: signedMoneyToString(unrealizedBefore),
+      equityBefore: signedMoneyToString(equityBefore),
+      equityAfter: signedMoneyToString(afterState.equity),
+      marginBefore: moneyToString(marginBefore),
+      marginAfter: moneyToString(nextMargin),
+      positionQuantityBefore: quantityToString(currentPosition?.quantity ?? (0n as Quantity)),
+      positionQuantityAfter: quantityToString(nextPosition.quantity),
+      createdAt: now,
+    });
     const [filledOrder] = await tx
       .update(orders)
       .set({ status: 'FILLED', filledAt: now, updatedAt: now })

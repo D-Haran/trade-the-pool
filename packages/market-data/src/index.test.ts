@@ -36,6 +36,24 @@ describe('DeterministicMarketPriceSource', () => {
     expect(received).toEqual(['201.00000000']);
   });
 
+  it('models a rejected development mark without replacing or publishing the trusted mark', () => {
+    const source = new DeterministicMarketPriceSource(new Date('2026-01-01T00:00:00.000Z'));
+    const executable: string[] = [];
+    source.subscribe((snapshot) => executable.push(priceToString(snapshot.price)));
+    source.rejectPrice('ETH-USD', '188000.00', new Date('2026-01-01T00:00:01.000Z'));
+    expect(executable).toEqual([]);
+    expect(source.getSnapshot('ETH-USD')).toMatchObject({
+      price: 400000000000n,
+      status: 'DEGRADED',
+      executionEligible: false,
+    });
+    source.advancePrice('ETH-USD', '3999.00', new Date('2026-01-01T00:00:02.000Z'));
+    expect(source.getSnapshot('ETH-USD')).toMatchObject({
+      status: 'LIVE',
+      executionEligible: true,
+    });
+  });
+
   it('serves deterministic shared candle history and aggregates intervals', () => {
     const source = new DeterministicMarketPriceSource(new Date('2026-01-01T12:00:00.000Z'));
     const minutes = source.getCandles('BTC-USD', '1m', 10);

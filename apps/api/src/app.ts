@@ -783,6 +783,13 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
           entryId: body.entryId,
           orderId: result.order.id,
           fillId: result.fill?.id,
+          executionReason: result.order.executionReason,
+          positionSide: result.order.positionSide,
+          intent: result.order.intent,
+          markUsed: result.fill?.referencePrice,
+          fillPrice: result.fill?.fillPrice,
+          realizedPnL: result.fill?.realizedPnL,
+          equityAfter: result.account.equity,
         },
       );
       return reply.status(201).send({
@@ -796,6 +803,7 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
           positionSide: result.order.positionSide,
           intent: result.order.intent,
           orderType: result.order.orderType,
+          executionReason: result.order.executionReason,
           leverage: result.order.leverage,
           requestedNotional:
             'intent' in body
@@ -1109,10 +1117,38 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
   );
 
   if (config.NODE_ENV === 'development' && config.DEV_AUTH_ENABLED) {
+    const developmentAuditSchema = z.object({ id: uuidSchema }).strict();
+    app.get(
+      '/v1/dev/audit/fills/:id',
+      {
+        schema: { tags: ['Development'], params: openApiSchema(developmentAuditSchema) },
+      },
+      async (request) => {
+        const user = requireUser(request);
+        const { id } = parse(developmentAuditSchema, request.params);
+        const row = await entries.fillAudit(id);
+        await authorization.canReadPrivateHistory(user.id, row.fill.entryId);
+        return { data: row };
+      },
+    );
+    app.get(
+      '/v1/dev/audit/orders/:id',
+      {
+        schema: { tags: ['Development'], params: openApiSchema(developmentAuditSchema) },
+      },
+      async (request) => {
+        const user = requireUser(request);
+        const { id } = parse(developmentAuditSchema, request.params);
+        const row = await entries.orderAudit(id);
+        await authorization.canReadPrivateHistory(user.id, row.order.entryId);
+        return { data: row };
+      },
+    );
     const developmentMarketSchema = z
       .object({
         symbol: marketSymbolSchema,
         price: z.string().regex(/^(?!0+(?:\.0+)?$)\d+(?:\.\d{1,8})?$/),
+        mode: z.enum(['ACCEPT', 'REJECT']).default('ACCEPT'),
       })
       .strict();
     app.post(
@@ -1126,14 +1162,27 @@ export async function buildApp(dependencies?: AppDependencies): Promise<FastifyI
       async (request) => {
         requireUser(request);
         const body = parse(developmentMarketSchema, request.body);
-        const market = dependencies.market as Partial<ControllableMarketPriceProvider>;
+        const market = dependencies.market as Partial<
+          ControllableMarketPriceProvider & {
+            rejectPrice(
+              symbol: z.infer<typeof marketSymbolSchema>,
+              price: string,
+              timestamp: Date,
+            ): Awaited<ReturnType<ControllableMarketPriceProvider['getSnapshot']>>;
+          }
+        >;
         if (typeof market.advancePrice !== 'function')
           throw new ApiError(404, 'NOT_FOUND', 'Development market controls are unavailable.');
-        const snapshot = market.advancePrice(body.symbol, body.price, new Date());
+        if (body.mode === 'REJECT' && typeof market.rejectPrice !== 'function')
+          throw new ApiError(404, 'NOT_FOUND', 'Rejected-mark fixtures are unavailable.');
+        const snapshot =
+          body.mode === 'REJECT'
+            ? market.rejectPrice!(body.symbol, body.price, new Date())
+            : market.advancePrice(body.symbol, body.price, new Date());
         // The observable market listener projects risk asynchronously. Development controls are
         // used by deterministic browser tests, so do not acknowledge a price step until the
         // authoritative order/liquidation pass for that step has completed.
-        await trading.processMarketTick(body.symbol);
+        if (body.mode === 'ACCEPT') await trading.processMarketTick(body.symbol);
         return {
           data: {
             symbol: snapshot.symbol,

@@ -197,6 +197,9 @@ export const environmentSchema = z
     MARKET_BOOK_STALE_MS: z.coerce.number().int().min(2_000).default(15_000),
     MARKET_COMPARISON_STALE_MS: z.coerce.number().int().min(2_000).default(30_000),
     MARKET_MAX_DEVIATION_BPS: z.coerce.number().int().min(1).max(5_000).default(100),
+    MARKET_MAX_JUMP_BPS_TIER_1: z.coerce.number().int().min(100).max(10_000).default(1_500),
+    MARKET_MAX_JUMP_BPS_TIER_2: z.coerce.number().int().min(100).max(10_000).default(2_500),
+    MARKET_MAX_JUMP_BPS_TIER_3: z.coerce.number().int().min(100).max(10_000).default(4_000),
   })
   .superRefine((environment, context) => {
     if (environment.NODE_ENV === 'production' && environment.DEV_AUTH_ENABLED)

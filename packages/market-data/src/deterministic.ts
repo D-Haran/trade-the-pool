@@ -56,6 +56,7 @@ export class DeterministicMarketPriceSource
   readonly #trades = new Map<MarketSymbol, MarketTrade[]>();
   readonly #listeners = new Set<MarketPriceListener>();
   readonly #eventListeners = new Set<MarketEventListener>();
+  readonly #degraded = new Set<MarketSymbol>();
 
   constructor(initialTimestamp = new Date()) {
     for (const [symbolIndex, symbol] of SUPPORTED_SYMBOLS.entries()) {
@@ -101,10 +102,13 @@ export class DeterministicMarketPriceSource
   getSnapshot(symbol: MarketSymbol): MarketPriceSnapshot {
     const snapshot = this.#snapshots.get(symbol);
     if (!snapshot) throw new Error(`Unsupported market symbol: ${symbol}`);
+    const degraded = this.#degraded.has(symbol);
     return {
       ...snapshot,
       marketTimestamp: new Date(snapshot.marketTimestamp),
       receivedAt: new Date(snapshot.receivedAt),
+      status: degraded ? 'DEGRADED' : 'LIVE',
+      executionEligible: !degraded,
     };
   }
 
@@ -127,6 +131,7 @@ export class DeterministicMarketPriceSource
       status: 'LIVE',
       executionEligible: true,
     };
+    this.#degraded.delete(symbol);
     this.#snapshots.set(symbol, snapshot);
     const history = this.#history.get(symbol) ?? [];
     history.push(snapshot);
@@ -156,6 +161,32 @@ export class DeterministicMarketPriceSource
       listener({ type: 'book', book: this.getOrderBook(symbol) });
     }
     return published;
+  }
+
+  rejectPrice(symbol: MarketSymbol, price: string | Price, timestamp: Date): MarketPriceSnapshot {
+    const rejectedPrice = typeof price === 'string' ? parsePrice(price) : price;
+    const trusted = this.getSnapshot(symbol);
+    if (timestamp < trusted.marketTimestamp)
+      throw new Error('Market timestamp cannot move backwards');
+    this.#degraded.add(symbol);
+    const view = this.getMarketView(symbol);
+    for (const listener of this.#eventListeners) {
+      listener({
+        type: 'mark-rejected',
+        symbol,
+        reason: 'ABNORMAL_JUMP',
+        rejectedPrice,
+        trustedPrice: trusted.price,
+        comparisonPrices: [],
+        deviationBasisPoints: null,
+        jumpBasisPoints: null,
+        marketTimestamp: new Date(timestamp),
+        receivedAt: new Date(timestamp),
+      });
+      listener({ type: 'status', symbol, status: 'DEGRADED' });
+      listener({ type: 'price', view });
+    }
+    return this.getSnapshot(symbol);
   }
 
   subscribe(listener: MarketPriceListener): () => void {
@@ -200,14 +231,15 @@ export class DeterministicMarketPriceSource
 
   getMarketView(symbol: MarketSymbol): MarketView {
     const snapshot = this.getSnapshot(symbol);
+    const status = snapshot.status ?? 'LIVE';
     return {
       symbol,
       exchangePrice: snapshot,
       authoritativeMark: snapshot,
       comparisonPrice: snapshot,
-      status: 'LIVE',
+      status,
       exchangeStatus: 'LIVE',
-      availability: 'ACTIVE',
+      availability: status === 'DEGRADED' ? 'DEGRADED' : 'ACTIVE',
       statistics: this.getStatistics(symbol),
       deviationBasisPoints: 0n,
     };
@@ -342,9 +374,9 @@ export class DeterministicMarketPriceSource
       })),
       markets: SUPPORTED_SYMBOLS.map((symbol) => ({
         symbol,
-        status: 'LIVE',
+        status: this.#degraded.has(symbol) ? 'DEGRADED' : 'LIVE',
         exchangeStatus: 'LIVE',
-        availability: 'ACTIVE',
+        availability: this.#degraded.has(symbol) ? 'DEGRADED' : 'ACTIVE',
         authoritativePriceAgeMs: Math.max(
           0,
           Date.now() - this.getSnapshot(symbol).marketTimestamp.getTime(),

@@ -58,6 +58,7 @@ export async function prepareE2eDatabase(): Promise<void> {
 
 export async function cleanFixtures(sql: postgres.Sql): Promise<void> {
   await sql`DELETE FROM account_ledger_entries WHERE entry_id IN (SELECT id FROM tournament_entries WHERE tournament_id IN (${E2E.tournamentId}, ${E2E.completedTournamentId}))`;
+  await sql`DELETE FROM fill_audits WHERE entry_id IN (SELECT id FROM tournament_entries WHERE tournament_id IN (${E2E.tournamentId}, ${E2E.completedTournamentId}))`;
   await sql`DELETE FROM fills WHERE entry_id IN (SELECT id FROM tournament_entries WHERE tournament_id IN (${E2E.tournamentId}, ${E2E.completedTournamentId}))`;
   await sql`DELETE FROM positions WHERE entry_id IN (SELECT id FROM tournament_entries WHERE tournament_id IN (${E2E.tournamentId}, ${E2E.completedTournamentId}))`;
   await sql`DELETE FROM orders WHERE entry_id IN (SELECT id FROM tournament_entries WHERE tournament_id IN (${E2E.tournamentId}, ${E2E.completedTournamentId}))`;
